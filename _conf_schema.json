@@ -6,12 +6,42 @@
   },
   "max_size_mb": {
     "type": "float",
-    "description": "允许下载的最大视频大小(MB)",
-    "default": 200
+    "description": "允许下载的最大视频大小(MB)，0 表示不限制",
+    "default": 2000
   },
   "quality": {
     "type": "int",
-    "description": "默认画质代码：80=1080P，112=1080P+，116=1080P60，120=4K",
+    "description": "B 站默认画质代码：80=1080P，112=1080P+，116=1080P60，120=4K",
     "default": 80
+  },
+  "ytdlp_enabled": {
+    "type": "bool",
+    "description": "启用多平台下载（抖音、小红书、YouTube 等，依赖 yt-dlp）",
+    "default": true
+  },
+  "ytdlp_proxy": {
+    "type": "string",
+    "description": "yt-dlp 使用的代理地址，例如 http://127.0.0.1:7890",
+    "default": "",
+    "hint": "留空表示直连。仅影响多平台下载，不影响 B 站解析。"
+  },
+  "ytdlp_cookie": {
+    "type": "string",
+    "description": "全局多平台 Cookie 字符串（可选，作为兜底）",
+    "default": "",
+    "secret": true,
+    "hint": "建议优先在 Web 管理页「Cookie 输入」中按平台添加；这里填写的 Cookie 会对所有平台生效。"
+  },
+  "ytdlp_cookiefile": {
+    "type": "string",
+    "description": "Netscape 格式 Cookies 文件路径（可选）",
+    "default": "",
+    "secret": true,
+    "hint": "相对路径基于插件数据目录；与上面的 Cookie 二选一即可。"
+  },
+  "ytdlp_allow_any_site": {
+    "type": "bool",
+    "description": "允许任意 yt-dlp 支持的站点（默认只响应常见视频平台）",
+    "default": false
   }
 }

@@ -4,6 +4,16 @@
 
 ## [未发布] - 2026-11-10
 
+### 新增
+
+- 新增 yt-dlp 多平台下载：抖音、小红书、微博、YouTube、TikTok、X（Twitter）、Instagram、Facebook、Vimeo 等站点可通过 `/saveany` 或 @机器人 触发；B 站继续使用原生解析，番剧、专栏、动态等能力不受影响。
+- 新增多平台扫码登录：B 站、微博、抖音可在「扫码登录」中切换平台扫码；小红书、YouTube、TikTok、X 等平台提供登录页与手动 Cookie 指引。
+- Cookie 存储新增 `platform` 字段，旧 B 站 Cookie 自动兼容；「Cookie 管理」支持按平台筛选，多平台 Cookie 互不覆盖。
+- 数据概览新增「平台分布」，最近下载记录增加平台列；统计文件新增 `platforms` 字段，旧数据自动归入 B 站。
+- 新增多平台配置项：`ytdlp_enabled`、`ytdlp_proxy`、`ytdlp_cookie`、`ytdlp_cookiefile`、`ytdlp_allow_any_site`，可在 Web 管理页「多平台下载」中修改。
+- `/saveany` 改为从整条消息中提取链接，支持直接粘贴带分享文案的抖音口令；抖音短链会自动跟随跳转并规整为标准链接。
+- 媒体下载统一应用 `max_size_mb` 限制，B 站与多平台下载均生效。
+
 ### 变更
 
 - 仓库地址更新：`https://github.com/SATA-F5/SaveBili` → `https://github.com/Shou-Lu/SaveBili`（GitHub 账号改名，旧地址会由 GitHub 自动跳转）。

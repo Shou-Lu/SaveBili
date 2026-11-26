@@ -11,7 +11,7 @@ export const TEMPLATE = `
     <aside class="sidebar">
         <div class="sidebar-title">SaveBili</div>
         <div class="nav-item" :class="{ active: activeSection === 'dashboard' }" @click="activeSection = 'dashboard'">数据概览</div>
-        <div class="nav-item" :class="{ active: activeSection === 'qrcode' }" @click="activeSection = 'qrcode'">扫码登录</div>
+        <div class="nav-item" :class="{ active: activeSection === 'qrcode' }" @click="openQrSection">扫码登录</div>
         <div class="nav-item" :class="{ active: activeSection === 'cookie-input' }" @click="activeSection = 'cookie-input'">Cookie 输入</div>
         <div class="nav-item" :class="{ active: activeSection === 'cookie-manage' }" @click="activeSection = 'cookie-manage'">Cookie 管理</div>
         <div class="nav-item" :class="{ active: activeSection === 'config' }" @click="activeSection = 'config'">配置插件</div>
@@ -50,7 +50,7 @@ export const TEMPLATE = `
                 <div class="stat-card">
                     <div class="stat-label">可用 Cookie</div>
                     <div class="stat-value">{{ stats.cookies.enabled }}<span class="stat-unit">/ {{ stats.cookies.total }}</span></div>
-                    <div class="stat-sub">{{ stats.cookies.enabled > 0 ? '高清画质已启用' : '未登录，仅能下载低清' }}</div>
+                    <div class="stat-sub">B 站 {{ (stats.cookies.platforms || {}).bilibili || 0 }} · 其他平台 {{ stats.cookies.enabled - ((stats.cookies.platforms || {}).bilibili || 0) }}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">FFmpeg</div>
@@ -76,12 +76,22 @@ export const TEMPLATE = `
                 </div>
 
                 <div class="glass-card">
-                    <h2>类型分布</h2>
+                    <h2>内容类型</h2>
                     <div v-if="typeRows.length === 0" class="empty">暂无下载数据</div>
                     <div v-for="t in typeRows" :key="t.key" class="type-row">
                         <span class="type-name">{{ t.label }}</span>
                         <div class="type-track"><div class="type-fill" :style="{ width: t.pct + '%' }"></div></div>
                         <span class="type-count">{{ t.count }}</span>
+                    </div>
+                </div>
+
+                <div class="glass-card">
+                    <h2>平台分布</h2>
+                    <div v-if="platformRows.length === 0" class="empty">暂无下载数据</div>
+                    <div v-for="p in platformRows" :key="p.key" class="type-row">
+                        <span class="type-name">{{ p.label }}</span>
+                        <div class="type-track"><div class="type-fill" :style="{ width: p.pct + '%' }"></div></div>
+                        <span class="type-count">{{ p.count }}</span>
                     </div>
                 </div>
             </div>
@@ -90,11 +100,12 @@ export const TEMPLATE = `
                 <h2>最近下载</h2>
                 <table class="recent-table" v-if="stats.recent.length > 0">
                     <thead>
-                        <tr><th>时间</th><th>类型</th><th>标题</th><th>大小</th><th>状态</th></tr>
+                        <tr><th>时间</th><th>平台</th><th>类型</th><th>标题</th><th>大小</th><th>状态</th></tr>
                     </thead>
                     <tbody>
                         <tr v-for="(r, i) in stats.recent" :key="i">
                             <td class="mono">{{ formatTime(r.ts) }}</td>
+                            <td><span class="platform-badge">{{ platformLabel(r.platform) }}</span></td>
                             <td>{{ typeLabel(r.type) }}</td>
                             <td class="title-cell" :title="r.title">{{ r.title || '（无标题）' }}</td>
                             <td class="mono">{{ r.bytes ? formatBytes(r.bytes) : '-' }}</td>
@@ -102,7 +113,7 @@ export const TEMPLATE = `
                         </tr>
                     </tbody>
                 </table>
-                <div v-else class="empty">还没有下载记录，发个 B 站链接试试</div>
+                <div v-else class="empty">还没有下载记录，发个视频链接试试</div>
             </div>
         </section>
 
@@ -110,11 +121,29 @@ export const TEMPLATE = `
         <section v-if="activeSection === 'qrcode'">
             <div class="glass-card">
                 <h2>扫码登录</h2>
-                <p class="hint">使用 B 站 App 扫码，登录后自动保存 Cookie，可下载更高画质。</p>
-                <div v-if="qrUrl" class="qr-box">
-                    <img :src="qrUrl" alt="二维码">
+                <div class="platform-tabs">
+                    <button
+                        v-for="p in qrPlatforms"
+                        :key="p.key"
+                        class="ghost platform-tab"
+                        :class="{ active: qrPlatform === p.key }"
+                        @click="selectQrPlatform(p.key)"
+                    >{{ p.label }}</button>
                 </div>
-                <button @click="generateQR" :disabled="isLoading">{{ isLoading ? '生成中...' : '重新生成二维码' }}</button>
+                <p class="hint">{{ qrHint }}</p>
+                <div v-if="qrSupported">
+                    <div v-if="qrUrl" class="qr-box">
+                        <img :src="qrUrl" alt="二维码">
+                    </div>
+                    <p class="hint" v-if="qrMessage">{{ qrMessage }}</p>
+                    <button @click="generateQR" :disabled="isLoading">{{ isLoading ? '生成中...' : '重新生成二维码' }}</button>
+                    <div><a v-if="qrStatus === 'error' && qrLoginUrl" :href="qrLoginUrl" target="_blank" rel="noopener" class="login-link">打开登录页</a></div>
+                </div>
+                <div v-else>
+                    <p class="hint">{{ qrMessage }}</p>
+                    <a v-if="qrLoginUrl" :href="qrLoginUrl" target="_blank" rel="noopener" class="login-link">打开登录页</a>
+                </div>
+                <p class="hint">扫码成功后可在「Cookie 管理」查看对应平台的 Cookie。</p>
             </div>
         </section>
 
@@ -122,10 +151,14 @@ export const TEMPLATE = `
         <section v-if="activeSection === 'cookie-input'">
             <div class="form-group">
                 <h2>手动添加 Cookie</h2>
+                <label>平台</label>
+                <select v-model="manualCookie.platform">
+                    <option v-for="p in platformOptions" :key="p.key" :value="p.key">{{ p.label }}</option>
+                </select>
                 <label>Cookie 字符串</label>
-                <textarea v-model="manualCookie.cookie" rows="4" placeholder="粘贴完整 Cookie 字符串（如 SESSDATA=xxx; bili_jct=yyy），或直接输入 SESSDATA 值（不含 SESSDATA= 前缀）"></textarea>
+                <textarea v-model="manualCookie.cookie" rows="4" placeholder="粘贴对应平台的 Cookie 字符串；B 站也可以只填 SESSDATA 值"></textarea>
                 <label>备注</label>
-                <input v-model="manualCookie.remark" type="text" placeholder="例如：大会员账号">
+                <input v-model="manualCookie.remark" type="text" placeholder="例如：大会员账号 / 抖音小号">
                 <label>优先级（数字越小越优先）</label>
                 <input v-model="manualCookie.priority" type="number" min="1" max="999">
                 <label>
@@ -139,11 +172,24 @@ export const TEMPLATE = `
         <section v-if="activeSection === 'cookie-manage'">
             <div class="glass-card">
                 <h2>Cookie 管理</h2>
+                <label>平台筛选</label>
+                <select v-model="cookieFilter">
+                    <option value="all">全部平台</option>
+                    <option v-for="p in platformOptions" :key="p.key" :value="p.key">{{ p.label }}</option>
+                </select>
                 <button class="danger" @click="requestClearAll" v-if="cookies.length > 0">清除全部 Cookie</button>
                 <div v-if="cookies.length === 0" class="empty">暂无 Cookie</div>
-                <div v-for="(c, index) in cookies" :key="index" class="cookie-item">
+                <div
+                    v-for="(c, index) in cookies"
+                    :key="index"
+                    class="cookie-item"
+                    v-show="cookieFilter === 'all' || platformOf(c) === cookieFilter"
+                >
                     <div class="cookie-info">
-                        <div class="cookie-remark">{{ c.remark || '未命名' }}</div>
+                        <div class="cookie-remark">
+                            <span class="platform-badge">{{ platformLabel(platformOf(c)) }}</span>
+                            {{ c.remark || '未命名' }}
+                        </div>
                         <div class="cookie-preview">{{ c.cookie.substring(0, 50) }}...</div>
                         <div class="cookie-meta">
                             <label>优先级: <input type="number" :value="c.priority" @change="updatePriority(index, $event.target.value)"></label>
@@ -163,8 +209,31 @@ export const TEMPLATE = `
                 <input v-model="configForm.download_dir" type="text">
                 <label>最大文件大小 (MB)</label>
                 <input v-model="configForm.max_size_mb" type="number" min="1">
-                <label>画质代码</label>
+                <label>画质代码（B 站）</label>
                 <input v-model="configForm.quality" type="number" min="1">
+            </div>
+
+            <div class="form-group" style="margin-top: 20px;">
+                <h2>多平台下载（yt-dlp）</h2>
+                <p class="hint">
+                    抖音、小红书、微博、YouTube、TikTok、X、Instagram 等站点由 yt-dlp 解析。
+                    B 站仍然使用原生解析，不受这里影响。
+                </p>
+                <div style="margin: 10px 0; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                    <span>yt-dlp：</span>
+                    <span :style="{ color: ytdlpInfo.available ? '#00d2ff' : '#ff416c' }">
+                        {{ ytdlpInfo.available ? ('v' + ytdlpInfo.version + ' 已就绪') : '未安装（请检查插件依赖）' }}
+                    </span>
+                </div>
+                <label><input type="checkbox" v-model="configForm.ytdlp_enabled"> 启用多平台下载</label>
+                <label>代理地址（可选）</label>
+                <input v-model="configForm.ytdlp_proxy" type="text" placeholder="http://127.0.0.1:7890">
+                <label>Cookie（可选，抖音等平台触发风控时需要）</label>
+                <input v-model="configForm.ytdlp_cookie" type="password" placeholder="ttwid=...; passport_csrf_token=...">
+                <label>Cookies 文件路径（可选，Netscape 格式）</label>
+                <input v-model="configForm.ytdlp_cookiefile" type="text" placeholder="留空则不使用，相对路径基于插件数据目录">
+                <label><input type="checkbox" v-model="configForm.ytdlp_allow_any_site"> 允许任意 yt-dlp 支持的站点</label>
+                <p class="hint">默认只响应常见视频平台链接，避免误下载普通网页。</p>
                 <button @click="saveConfig" :disabled="configLoading">{{ configLoading ? '保存中...' : '保存配置' }}</button>
             </div>
 

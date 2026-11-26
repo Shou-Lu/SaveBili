@@ -21,6 +21,20 @@ from astrbot.api.star import Context, Star, register, StarTools
 import astrbot.api.message_components as Comp
 
 from .plugin_api import PluginAPI
+from .ytdlp_downloader import (
+    PLATFORM_LABELS,
+    SUPPORTED_PLATFORM_TEXT,
+    YtDlpError,
+    detect_platform,
+    extract_urls,
+    is_short_link as is_ytdlp_short_link,
+    is_supported_url as is_ytdlp_supported_url,
+    normalize_url as normalize_ytdlp_url,
+    probe as ytdlp_probe,
+    download as ytdlp_download,
+    ytdlp_available,
+    ytdlp_version,
+)
 
 gk_art = r"""//       ________ __    _____    __                  __   _
 //      / ____/ //_/   / ___/   / /_   __  __   ____/ /  (_)  ____
@@ -33,7 +47,7 @@ logger.info(gk_art)
 
 
 @register("astrbot_plugin_bili_downloader", "守禄",
-          "使用 saveany 解析并下载 B 站内容，支持视频/番剧/专栏/收藏夹/合集/动态，多 Cookie 管理",
+          "B 站原生解析 + yt-dlp 多平台下载，支持视频/番剧/专栏/收藏夹/合集/动态与抖音等站点，多 Cookie 管理",
           "1.2.2",
           "https://github.com/Shou-Lu/SaveBili")
 class SaveAnyBilibiliDownloader(Star):
@@ -109,10 +123,24 @@ class SaveAnyBilibiliDownloader(Star):
         self.ffmpeg_status = {"status": "idle", "message": "尚未检测 FFmpeg"}
         self.ffmpeg_downloading = False
 
+        # 多平台（yt-dlp）配置
+        self.ytdlp_enabled = True
+        self.ytdlp_proxy = ""
+        self.ytdlp_cookie = ""
+        self.ytdlp_cookiefile = ""
+        self.ytdlp_allow_any_site = False
+
         if config:
             self.download_dir = self._resolve_download_dir(config.get("download_dir"))
             self.max_size_mb = float(config.get("max_size_mb", self.max_size_mb))
             self.quality = int(config.get("quality", self.quality))
+            self.ytdlp_enabled = bool(config.get("ytdlp_enabled", self.ytdlp_enabled))
+            self.ytdlp_proxy = str(config.get("ytdlp_proxy", "") or "").strip()
+            self.ytdlp_cookie = str(config.get("ytdlp_cookie", "") or "").strip()
+            self.ytdlp_cookiefile = str(config.get("ytdlp_cookiefile", "") or "").strip()
+            self.ytdlp_allow_any_site = bool(
+                config.get("ytdlp_allow_any_site", self.ytdlp_allow_any_site)
+            )
 
         self._load_plugin_config()
         self.cookies = []
@@ -251,14 +279,64 @@ class SaveAnyBilibiliDownloader(Star):
             path = self.data_dir / path
         return str(path)
 
+    def _resolve_optional_path(self, value) -> str:
+        """Cookies 文件等可选路径：相对路径基于插件数据目录。"""
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = self.data_dir / path
+        return str(path)
+
+    @staticmethod
+    def _generic_headers() -> dict:
+        return {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+
+    def ytdlp_status(self) -> dict:
+        return {
+            "available": ytdlp_available(),
+            "version": ytdlp_version(),
+            "enabled": bool(self.ytdlp_enabled),
+            "platforms": SUPPORTED_PLATFORM_TEXT,
+        }
+
+    def build_help_text(self) -> str:
+        lines = [
+            "请提供视频链接或 B 站 BV 号。",
+            "B 站：视频、番剧、专栏、动态、收藏夹、合集。",
+            f"多平台：{SUPPORTED_PLATFORM_TEXT}。",
+        ]
+        if not ytdlp_available():
+            lines.append("提示：当前环境未安装 yt-dlp，多平台下载暂不可用。")
+        return "\n".join(lines)
+
     def _load_plugin_config(self):
         cfg_file = self.data_dir / "plugin_config.json"
         if cfg_file.exists():
             try:
                 data = json.loads(cfg_file.read_text(encoding="utf-8"))
-                self.download_dir = self._resolve_download_dir(data.get("download_dir"))
-                self.max_size_mb = float(data.get("max_size_mb", self.max_size_mb))
-                self.quality = int(data.get("quality", self.quality))
+                if "download_dir" in data:
+                    self.download_dir = self._resolve_download_dir(data.get("download_dir"))
+                if "max_size_mb" in data:
+                    self.max_size_mb = float(data.get("max_size_mb"))
+                if "quality" in data:
+                    self.quality = int(data.get("quality"))
+                if "ytdlp_enabled" in data:
+                    self.ytdlp_enabled = bool(data.get("ytdlp_enabled"))
+                if "ytdlp_proxy" in data:
+                    self.ytdlp_proxy = str(data.get("ytdlp_proxy") or "").strip()
+                if "ytdlp_cookie" in data:
+                    self.ytdlp_cookie = str(data.get("ytdlp_cookie") or "").strip()
+                if "ytdlp_cookiefile" in data:
+                    self.ytdlp_cookiefile = str(data.get("ytdlp_cookiefile") or "").strip()
+                if "ytdlp_allow_any_site" in data:
+                    self.ytdlp_allow_any_site = bool(data.get("ytdlp_allow_any_site"))
             except Exception as e:
                 logger.error(f"加载插件本地配置失败: {e}")
 
@@ -273,22 +351,45 @@ class SaveAnyBilibiliDownloader(Star):
             "download_dir": stored_dir,
             "max_size_mb": self.max_size_mb,
             "quality": self.quality,
+            "ytdlp_enabled": self.ytdlp_enabled,
+            "ytdlp_proxy": self.ytdlp_proxy,
+            "ytdlp_cookie": self.ytdlp_cookie,
+            "ytdlp_cookiefile": self.ytdlp_cookiefile,
+            "ytdlp_allow_any_site": self.ytdlp_allow_any_site,
         }
-        cfg_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            tmp_file = cfg_file.with_name(cfg_file.name + ".tmp")
+            tmp_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_file, cfg_file)
+            if os.name != "nt":
+                # 配置里可能包含平台 Cookie
+                os.chmod(cfg_file, 0o600)
+        except Exception as e:
+            logger.error(f"保存插件本地配置失败: {e}")
 
     def _load_cookies(self):
         cookie_file = self.data_dir / "cookies.json"
         if cookie_file.exists():
             try:
-                self.cookies = json.loads(cookie_file.read_text(encoding="utf-8"))
+                data = json.loads(cookie_file.read_text(encoding="utf-8"))
+                self.cookies = [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
             except Exception:
                 self.cookies = []
+            # 旧版本只有 B 站 Cookie，补上 platform 字段，兼容多平台
+            changed = False
+            for item in self.cookies:
+                if isinstance(item, dict) and not item.get("platform"):
+                    item["platform"] = "bilibili"
+                    changed = True
             # 兼容从旧目录迁移过来的文件，统一收紧权限
             if os.name != "nt":
                 try:
                     os.chmod(cookie_file, 0o600)
                 except Exception:
                     pass
+            if changed:
+                self._save_cookies()
+                return
         self._select_best_cookie()
 
     def _save_cookies(self):
@@ -302,10 +403,24 @@ class SaveAnyBilibiliDownloader(Star):
                 pass
         self._select_best_cookie()
 
-    def _select_best_cookie(self):
-        enabled = [c for c in self.cookies if c.get("enabled", True)]
+    def _select_best_cookie(self, platform: str = "bilibili") -> str:
+        """按平台挑选优先级最高的启用 Cookie，并同步 B 站快捷字段。"""
+        platform = (platform or "bilibili").lower()
+        enabled = [
+            c for c in self.cookies
+            if c.get("enabled", True) and (c.get("platform") or "bilibili").lower() == platform
+        ]
         enabled.sort(key=lambda x: x.get("priority", 100))
-        self.bilibili_cookie = enabled[0]["cookie"] if enabled else ""
+        cookie = enabled[0].get("cookie", "") if enabled else ""
+        if platform == "bilibili":
+            self.bilibili_cookie = cookie
+        return cookie
+
+    def get_platform_cookie(self, platform: str) -> str:
+        """获取指定平台的 Cookie；B 站沿用原有缓存字段。"""
+        if (platform or "bilibili").lower() == "bilibili":
+            return self.bilibili_cookie
+        return self._select_best_cookie(platform)
 
     # ============ 下载统计（供 WebUI 可视化） ============
     @staticmethod
@@ -314,6 +429,7 @@ class SaveAnyBilibiliDownloader(Star):
             "totals": {"count": 0, "success": 0, "failed": 0, "bytes": 0},
             "daily": {},
             "types": {},
+            "platforms": {},
             "recent": [],
         }
 
@@ -362,6 +478,16 @@ class SaveAnyBilibiliDownloader(Star):
                 if value:
                     result["types"][str(key)] = value
 
+        # 旧统计没有平台维度，按 B 站补默认值（插件此前只支持 B 站）
+        platforms = data.get("platforms")
+        if isinstance(platforms, dict):
+            for key, count in platforms.items():
+                value = self._safe_int(count)
+                if value:
+                    result["platforms"][str(key)] = value
+        if not result["platforms"] and result["totals"].get("count"):
+            result["platforms"]["bilibili"] = result["totals"]["count"]
+
         recent = data.get("recent")
         if isinstance(recent, list):
             for item in recent[:30]:
@@ -370,6 +496,7 @@ class SaveAnyBilibiliDownloader(Star):
                 result["recent"].append({
                     "ts": self._safe_int(item.get("ts", 0)),
                     "type": str(item.get("type", "") or ""),
+                    "platform": str(item.get("platform") or "bilibili"),
                     "title": str(item.get("title", "") or "")[:80],
                     "ok": bool(item.get("ok", False)),
                     "bytes": self._safe_int(item.get("bytes", 0)),
@@ -385,8 +512,9 @@ class SaveAnyBilibiliDownloader(Star):
         except Exception as e:
             logger.warning(f"保存统计数据失败: {e}")
 
-    def record_download(self, kind: str, title: str, ok: bool, size: int = 0):
+    def record_download(self, kind: str, title: str, ok: bool, size: int = 0, platform: str = "bilibili"):
         """记录一次下载结果（失败也计数，便于在 WebUI 看成功率）。"""
+        platform = (platform or "bilibili").lower()
         today = time.strftime("%Y-%m-%d")
         day = self.stats["daily"].setdefault(today, {"count": 0, "success": 0, "failed": 0, "bytes": 0})
         totals = self.stats["totals"]
@@ -396,9 +524,11 @@ class SaveAnyBilibiliDownloader(Star):
             if ok and size > 0:
                 bucket["bytes"] += int(size)
         self.stats["types"][kind] = self.stats["types"].get(kind, 0) + 1
+        self.stats["platforms"][platform] = self.stats["platforms"].get(platform, 0) + 1
         self.stats["recent"].insert(0, {
             "ts": int(time.time()),
             "type": kind,
+            "platform": platform,
             "title": (title or "")[:80],
             "ok": bool(ok),
             "bytes": int(size) if ok else 0,
@@ -432,13 +562,25 @@ class SaveAnyBilibiliDownloader(Star):
             "today": today,
             "days": days,
             "types": self.stats["types"],
+            "platforms": self.stats["platforms"],
             "recent": self.stats["recent"][:12],
             "success_rate": round(totals["success"] / totals["count"] * 100, 1) if totals["count"] else 0,
             "cookies": {
                 "total": len(self.cookies),
                 "enabled": sum(1 for c in self.cookies if c.get("enabled", True)),
+                "platforms": {
+                    key: sum(
+                        1 for c in self.cookies
+                        if c.get("enabled", True)
+                        and (c.get("platform") or "bilibili").lower() == key
+                    )
+                    for key in {
+                        (c.get("platform") or "bilibili").lower() for c in self.cookies
+                    }
+                },
             },
             "ffmpeg": self.ffmpeg_status,
+            "ytdlp": self.ytdlp_status(),
         }
 
     # ============ FFmpeg 探测（多平台） ============
@@ -568,7 +710,10 @@ class SaveAnyBilibiliDownloader(Star):
         except Exception as e:
             logger.warning(f"[初始化] 创建下载目录失败: {e}")
         self.plugin_api.register(self.context)
-        logger.info(f"B站下载插件已启动 (1.2.2) 下载目录: {self.download_dir}")
+        logger.info(
+            f"视频下载插件已启动 (1.2.2) 下载目录: {self.download_dir} | "
+            f"yt-dlp: {ytdlp_version() or '未安装'}"
+        )
         # 探测是全异步的（create_subprocess_exec），不会阻塞事件循环
         await self._detect_ffmpeg()
 
@@ -763,15 +908,18 @@ class SaveAnyBilibiliDownloader(Star):
         return name or "video"
 
     @filter.command("saveany")
-    async def saveany(self, event: AstrMessageEvent, url: str):
+    async def saveany(self, event: AstrMessageEvent, url: str = ""):
         # 注意：不能在第一个 yield 之前调用 event.stop_event()。
         # AstrBot 的调度器检测到 is_stopped() 后会 break，不再恢复这个生成器，
         # 于是 yield 之后的下载/发送全部不会执行（表现就是“卡住没反应”）。
         try:
-            if not url:
-                yield event.plain_result("请提供一个 B 站链接或 BV 号。")
+            # 抖音等平台的分享文案通常带一大段说明，参数只取第一个词会丢链接，
+            # 因此先从参数里找，找不到再扫整条消息。
+            target = self.extract_media_target(url) or self.extract_media_target(event.message_str)
+            if not target:
+                yield event.plain_result(self.build_help_text())
                 return
-            async for result in self._handle_request(event, url):
+            async for result in self._handle_request(event, target):
                 yield result
         finally:
             event.stop_event()
@@ -779,18 +927,18 @@ class SaveAnyBilibiliDownloader(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         # 使用 AstrBot 内置唤醒判断：只有 @ 机器人、带唤醒词或私聊消息才会处理，
-        # 不再对群聊中未 @ 机器人的普通 B 站链接自动下载。
+        # 不再对群聊中未 @ 机器人的普通链接自动下载。
         if not event.is_at_or_wake_command:
             return
         message = event.message_str.strip()
         # /saveany 交给指令处理器；唤醒前缀被框架剥离后消息可能以 "saveany" 开头
         if re.match(r"^/?saveany(?:\s|$)", message):
             return
-        url_or_bvid = self.extract_bvid_or_url(message)
-        if not url_or_bvid:
+        target = self.extract_media_target(message)
+        if not target:
             return
         try:
-            async for result in self._handle_request(event, url_or_bvid):
+            async for result in self._handle_request(event, target):
                 yield result
         finally:
             event.stop_event()
@@ -809,6 +957,33 @@ class SaveAnyBilibiliDownloader(Star):
         if m:
             return f"av{m.group(1)}"
         return None
+
+    def extract_media_target(self, text: str) -> Optional[str]:
+        """从消息里提取可下载目标：优先 B 站，其次 yt-dlp 支持的平台。"""
+        if not text:
+            return None
+        target = self.extract_bvid_or_url(str(text))
+        if target:
+            return target
+        if not self.ytdlp_enabled:
+            return None
+        for url in extract_urls(str(text)):
+            if is_ytdlp_supported_url(url, self.ytdlp_allow_any_site):
+                return url
+        return None
+
+    @classmethod
+    def _is_bilibili_target(cls, text: str) -> bool:
+        """判断输入是否是 B 站链接/ID，用于分流到原生解析。"""
+        value = (text or "").strip()
+        if re.match(r'^(BV[0-9A-Za-z]{10}|av\d+|cv\d+|(?:ep|ss)\d+|\d{11,})$', value, re.I):
+            return True
+        try:
+            parsed = urlparse(value if "://" in value else f"https://{value}")
+            host = (parsed.hostname or "").lower()
+        except Exception:
+            return False
+        return host == "bilibili.com" or host.endswith(".bilibili.com") or host in cls.SHORT_URL_HOSTS
 
     @classmethod
     def _is_short_url(cls, url: str) -> bool:
@@ -924,6 +1099,34 @@ class SaveAnyBilibiliDownloader(Star):
     def build_bangumi_notify(self, info: dict, ep_title: str, index: str) -> str:
         return f"正在下载番剧：\n{info.get('title', '未知')}\n集数：{index} / 共 {len(info.get('episodes', []))} 集\n\n本集标题：{ep_title or '（无标题）'}\n简介：{self._format_desc(info.get('desc'))}"
 
+    def build_ytdlp_notify(self, info: dict) -> str:
+        platform = PLATFORM_LABELS.get(info.get("platform"), info.get("platform") or "多平台")
+        lines = [f"正在下载（{platform}）：", info.get("title") or "未知", ""]
+        lines.append(f"作者：{info.get('uploader') or '未知'}")
+        duration = self._format_duration(info.get("duration"))
+        if duration:
+            lines.append(f"时长：{duration}")
+        desc = self._format_desc(info.get("description"), 120)
+        if desc and desc != "（无简介）":
+            lines.append(f"简介：{desc}")
+        if int(info.get("playlist_count") or 0) > 1:
+            lines.append(f"（检测到 {info['playlist_count']} 个条目，仅下载第 1 个）")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_duration(seconds) -> str:
+        try:
+            total = int(seconds)
+        except (TypeError, ValueError):
+            return ""
+        if total <= 0:
+            return ""
+        hours, rem = divmod(total, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
+
     @staticmethod
     def _normalize_image_url(url: str) -> str:
         if not url:
@@ -967,24 +1170,62 @@ class SaveAnyBilibiliDownloader(Star):
             logger.warning(f"[消息] 封面地址无效，已跳过: {url}")
             return None
 
+    async def _resolve_platform_short_url(self, url: str) -> str:
+        """抖音/小红书短链：尽力跟随跳转，失败时把原始链接交给 yt-dlp。"""
+        if not is_ytdlp_short_link(url):
+            return url
+        resolved = await self._resolve_once(url, self._generic_headers())
+        if not resolved:
+            return url
+        platform = detect_platform(resolved)
+        if not platform:
+            return url
+        # 抖音的风控验证页/首页不是作品页，交回原始短链让 yt-dlp 自己处理
+        if platform == "douyin" and not (
+            re.search(r"/(?:share/)?(?:video|note)/\d+", resolved)
+            or re.search(r"[?&]modal_id=\d+", resolved)
+        ):
+            return url
+        logger.info(f"[短链] {url} -> {resolved}")
+        return resolved
+
     async def _handle_request(self, event: AstrMessageEvent, url_or_bvid: str):
         """解析输入并逐个产出待发送的消息，由 AstrBot 负责实际发送。"""
-        # /saveany 命令和 @ 触发都会走到这里，统一先处理短链
-        url_or_bvid = await self.resolve_short_url(url_or_bvid)
-        if not url_or_bvid:
-            yield event.plain_result("短链解析失败，请检查链接是否有效或稍后重试。")
+        target = (url_or_bvid or "").strip()
+        if not target:
+            yield event.plain_result(self.build_help_text())
             return
 
-        info = self.detect_input_type(url_or_bvid)
-        if info["type"] == "unknown":
-            yield event.plain_result("无法识别的链接类型。")
-            return
+        # B 站短链先还原成真实链接；其它平台短链在下面尽力解析
+        if self._is_short_url(target):
+            target = await self.resolve_short_url(target)
+            if not target:
+                yield event.plain_result("短链解析失败，请检查链接是否有效或稍后重试。")
+                return
+
+        info = None
+        if self._is_bilibili_target(target):
+            info = self.detect_input_type(target)
+            if info.get("type") == "unknown":
+                info = None
+
+        # 非 B 站目标统一走 yt-dlp
+        if info is None:
+            if not self.ytdlp_enabled or not ytdlp_available():
+                yield event.plain_result(self.build_help_text())
+                return
+            target = await self._resolve_platform_short_url(target)
+            target = normalize_ytdlp_url(target)
+            if not is_ytdlp_supported_url(target, self.ytdlp_allow_any_site):
+                yield event.plain_result("暂不支持该平台或链接。\n" + self.build_help_text())
+                return
+            info = {"type": "ytdlp", "id": target}
 
         session_id = getattr(event, "unified_msg_origin", None) or getattr(event, "session_id", "default")
-        key = (str(session_id), url_or_bvid.strip())
+        key = (str(session_id), target.strip())
         now = time.time()
         if now - self._recent_requests.get(key, 0) < 10:
-            logger.warning(f"检测到 10 秒内重复请求，已忽略: {url_or_bvid}")
+            logger.warning(f"检测到 10 秒内重复请求，已忽略: {target}")
             yield event.plain_result("刚刚已处理过同一链接，请稍后再试。")
             return
         self._recent_requests[key] = now
@@ -1000,6 +1241,7 @@ class SaveAnyBilibiliDownloader(Star):
             "opus": self._handle_opus,
             "favlist": lambda e, i: self._handle_list(e, "favlist", i),
             "collection": lambda e, i: self._handle_list(e, "collection", i, info.get("mid", "")),
+            "ytdlp": self._handle_ytdlp,
         }
         handler = handlers.get(info["type"])
         if handler is None:
@@ -1014,6 +1256,62 @@ class SaveAnyBilibiliDownloader(Star):
         except Exception:
             logger.error(f"处理 {info['type']} 失败: {traceback.format_exc()}")
             yield event.plain_result("处理过程中发生错误，请查看控制台日志。")
+
+    async def _handle_ytdlp(self, event, url):
+        """使用 yt-dlp 下载非 B 站平台的视频。"""
+        platform = detect_platform(url) or "ytdlp"
+        label = PLATFORM_LABELS.get(platform, platform)
+        if not ytdlp_available():
+            yield event.plain_result("未安装 yt-dlp，无法使用多平台下载。请检查插件依赖是否安装成功。")
+            return
+
+        platform_cookie = self.get_platform_cookie(platform)
+        common = {
+            "proxy": self.ytdlp_proxy,
+            "cookie": platform_cookie or self.ytdlp_cookie,
+            "cookiefile": "" if (platform_cookie or self.ytdlp_cookie) else self._resolve_optional_path(self.ytdlp_cookiefile),
+        }
+        try:
+            info = await ytdlp_probe(url, **common)
+        except YtDlpError as e:
+            logger.warning(f"[多平台] 解析失败 {url}: {e}")
+            self.record_download("video", url, False, platform=platform)
+            yield event.plain_result(f"{label}解析失败：{e}")
+            return
+        except Exception:
+            logger.error(f"[多平台] 解析异常: {traceback.format_exc()}")
+            self.record_download("video", url, False, platform=platform)
+            yield event.plain_result(f"{label}解析失败，请查看控制台日志。")
+            return
+
+        title = info.get("title") or url
+        card = self._result(event, self.build_ytdlp_notify(info), info.get("thumbnail"))
+        if card is not None:
+            yield card
+
+        try:
+            result = await ytdlp_download(
+                info.get("download_url") or url,
+                out_dir=self.download_dir,
+                max_size_mb=self.max_size_mb,
+                ffmpeg_path=await self.find_ffmpeg(),
+                **common,
+            )
+        except YtDlpError as e:
+            logger.warning(f"[多平台] 下载失败 {url}: {e}")
+            self.record_download("video", title, False, platform=platform)
+            yield event.plain_result(f"下载失败：{e}")
+            return
+        except Exception:
+            logger.error(f"[多平台] 下载异常: {traceback.format_exc()}")
+            self.record_download("video", title, False, platform=platform)
+            yield event.plain_result("下载失败，请查看控制台日志。")
+            return
+
+        path = result.get("path")
+        size = int(result.get("filesize") or 0)
+        self.record_download("video", result.get("title") or title, True, size, platform=platform)
+        yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
 
     async def _handle_video(self, event, bvid):
         info = await self.get_bilibili_video_info(bvid)
@@ -1221,6 +1519,14 @@ class SaveAnyBilibiliDownloader(Star):
             if proc.returncode != 0:
                 logger.error(f"FFmpeg 合并失败: {stderr.decode('utf-8', errors='ignore')[-500:]}")
                 return None
+            limit = int(self.max_size_mb * 1024 * 1024) if self.max_size_mb and self.max_size_mb > 0 else 0
+            if limit and os.path.getsize(final_path) > limit:
+                logger.warning(f"合并后的视频超过大小限制（{self.max_size_mb:g} MB），已删除")
+                try:
+                    os.remove(final_path)
+                except OSError:
+                    pass
+                return None
             logger.info(f"音视频合并成功: {final_path}")
             return final_path
         except Exception as e:
@@ -1251,15 +1557,36 @@ class SaveAnyBilibiliDownloader(Star):
 
     async def _download_single_file(self, url: str, file_path: str) -> bool:
         try:
+            limit = int(self.max_size_mb * 1024 * 1024) if self.max_size_mb and self.max_size_mb > 0 else 0
             timeout = aiohttp.ClientTimeout(total=1800, connect=15, sock_read=30)
             async with aiohttp.ClientSession(timeout=timeout) as download_session:
                 async with download_session.get(url, headers=self._headers_for_url(url)) as resp:
                     if resp.status != 200:
                         logger.error(f"文件下载 HTTP 错误: {resp.status}")
                         return False
+                    # 服务器给出 Content-Length 时先做一次预检，避免白下载
+                    if limit and resp.content_length and resp.content_length > limit:
+                        logger.warning(
+                            f"文件超过大小限制（{resp.content_length / 1048576:.1f} MB > "
+                            f"{self.max_size_mb:g} MB），已跳过"
+                        )
+                        return False
+                    written = 0
+                    exceeded = False
                     with open(file_path, "wb") as f:
                         async for chunk in resp.content.iter_chunked(1024 * 1024):
+                            written += len(chunk)
+                            if limit and written > limit:
+                                exceeded = True
+                                break
                             f.write(chunk)
+                    if exceeded:
+                        logger.warning(f"文件超过大小限制（{self.max_size_mb:g} MB），已中止下载")
+                        try:
+                            os.remove(file_path)
+                        except OSError:
+                            pass
+                        return False
             return True
         except Exception as e:
             logger.error(f"文件下载异常: {traceback.format_exc()}")
@@ -1354,5 +1681,6 @@ class SaveAnyBilibiliDownloader(Star):
         return re.sub(r'\n{3,}', '\n\n', html.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")).strip()
 
     async def terminate(self):
+        await self.plugin_api.cancel_tasks()
         if self.session and not self.session.closed: await self.session.close()
-        logger.info("B站下载插件已停止")
+        logger.info("视频下载插件已停止")

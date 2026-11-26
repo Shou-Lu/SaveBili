@@ -165,7 +165,7 @@ body {
     color: var(--text-muted);
 }
 
-.form-group input, .form-group textarea {
+.form-group input, .form-group textarea, .form-group select {
     padding: 12px 14px;
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 12px;
@@ -179,7 +179,12 @@ body {
     font-family: inherit;
 }
 
-.form-group input:focus, .form-group textarea:focus {
+.form-group select option {
+    background: #1b2030;
+    color: #fff;
+}
+
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus {
     border-color: var(--primary-light);
     box-shadow: 0 0 0 3px rgba(0, 174, 236, 0.2);
     background: rgba(255,255,255,0.12);
@@ -212,6 +217,50 @@ body {
 
 .qr-box img:hover {
     transform: scale(1.02);
+}
+
+/* ========== 平台切换 / 平台标签 ========== */
+.platform-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 14px 0;
+}
+
+.platform-tab {
+    padding: 7px 14px;
+    font-size: 0.82rem;
+}
+
+.platform-tab.active {
+    background: linear-gradient(135deg, rgba(0, 174, 236, 0.9), rgba(0, 114, 255, 0.8));
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 4px 14px rgba(0, 174, 236, 0.25);
+}
+
+.platform-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    background: rgba(0, 174, 236, 0.15);
+    color: #00d2ff;
+    border: 1px solid rgba(0, 174, 236, 0.3);
+    margin-right: 6px;
+    white-space: nowrap;
+}
+
+.login-link {
+    display: inline-block;
+    margin: 8px 0;
+    color: #00d2ff;
+    text-decoration: none;
+    font-size: 0.88rem;
+}
+
+.login-link:hover {
+    text-decoration: underline;
 }
 
 /* ========== 按钮 ========== */
