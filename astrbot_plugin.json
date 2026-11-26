@@ -1,12 +1,12 @@
 {
     "name": "astrbot_plugin_bili_downloader",
     "display_name": "SaveBili",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "author": "守禄",
     "description": "B 站与多平台视频下载插件",
     "main": "main.py",
     "usage": "Savebili\nAstrBot 插件：下载 B 站及多平台视频并发送到聊天窗口。\n功能：\n通过指令或@机器人下载视频\nB 站原生解析：视频/番剧/专栏/动态/收藏夹/合集\n多平台（yt-dlp）：抖音、小红书、微博、YouTube、TikTok 等\nB 站/微博/抖音扫码登录，Cookie 按平台管理\n手动添加 Cookie、优先级、启用/禁用\nWeb管理页面：多平台登录、账号管理、配置、平台分布统计",
-    "repo": "https://github.com/Shou-Lu/SaveBili",
+    "repo": "https://github.com/shou-lu/SaveBili",
     "dependencies": [
         "aiohttp",
         "quart",

@@ -2,9 +2,9 @@ name: astrbot_plugin_bili_downloader
 display_name: SaveBili
 short_desc: B 站与多平台视频下载工具，多平台扫码登录、多Cookie管理、Web配置面板
 desc: 下载 B 站及多平台视频并发送至聊天窗口。B 站支持原生解析（视频/番剧/专栏/动态/收藏夹/合集）与扫码登录获取高清画质；抖音、小红书、YouTube 等站点通过 yt-dlp 下载。支持 B 站/微博/抖音扫码登录，Cookie 按平台管理，内置 Web 管理页面用于账号、配置、平台分布统计与下载记录管理。
-version: 1.3.0
+version: 1.3.1
 author: 守禄
-repo: https://github.com/Shou-Lu/SaveBili
+repo: https://github.com/shou-lu/SaveBili
 icon: logo.png
 astrbot_version: ">=4.24.1"
 support_platforms:
