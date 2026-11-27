@@ -20,6 +20,18 @@
 
 > 抖音等平台的分享文案很长（例如“复制打开抖音…”），可以直接整段粘贴，插件会从文本中提取链接。
 
+### 指令与群聊下载权限
+
+| 指令 | 作用 |
+| --- | --- |
+| `/saveany <链接>` | 解析并下载视频；是否真正下载受群聊权限控制 |
+| `/parse <链接>`（别名 `/解析`） | 只解析并展示视频信息，不下载视频 |
+
+- **解析始终可用**：即使群聊没有开启下载，也会回复视频信息卡片，并提示当前未开启下载。
+- **下载按群聊控制**：`group_download_mode` 支持 `all`（全部允许）、`whitelist`（仅白名单）、`blacklist`（黑名单禁止），配合 `group_download_list` 群号列表使用。
+- `private_download_enabled` 控制私聊是否允许下载。
+- `parse_all_group_messages` 开启后，群聊里不 @ 机器人也会解析视频链接，但只回复信息、不下载；下载仍需 @ 机器人且群聊已开启下载。
+
 ### 扫码登录支持情况
 
 | 平台 | 扫码登录 | 说明 |
@@ -77,6 +89,10 @@
 - `ytdlp_cookie`：全局兜底 Cookie 字符串，建议优先在「Cookie 输入」中按平台添加。
 - `ytdlp_cookiefile`：Netscape 格式 Cookies 文件路径，相对路径基于插件数据目录。
 - `ytdlp_allow_any_site`：允许任意 yt-dlp 支持的站点，默认关闭。
+- `group_download_mode`：群聊下载权限模式，`all` / `whitelist` / `blacklist`。
+- `group_download_list`：群号列表，白名单/黑名单模式下使用。
+- `private_download_enabled`：私聊是否允许下载，默认开启。
+- `parse_all_group_messages`：群聊无需 @ 也解析链接（仅解析、不下载），默认关闭。
 
 ## 依赖
 

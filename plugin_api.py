@@ -788,6 +788,10 @@ class PluginAPI:
                 "ytdlp_cookie": self.plugin.ytdlp_cookie,
                 "ytdlp_cookiefile": self.plugin.ytdlp_cookiefile,
                 "ytdlp_allow_any_site": self.plugin.ytdlp_allow_any_site,
+                "group_download_mode": self.plugin.group_download_mode,
+                "group_download_list": self.plugin.group_download_list,
+                "private_download_enabled": self.plugin.private_download_enabled,
+                "parse_all_group_messages": self.plugin.parse_all_group_messages,
             },
             "ytdlp": self.plugin.ytdlp_status(),
         })
@@ -813,6 +817,19 @@ class PluginAPI:
             self.plugin.ytdlp_cookiefile = str(data.get("ytdlp_cookiefile") or "").strip()
         if "ytdlp_allow_any_site" in data:
             self.plugin.ytdlp_allow_any_site = bool(data["ytdlp_allow_any_site"])
+        if "group_download_mode" in data:
+            mode = str(data.get("group_download_mode") or "all").lower()
+            if mode not in ("all", "whitelist", "blacklist"):
+                mode = "all"
+            self.plugin.group_download_mode = mode
+        if "group_download_list" in data:
+            self.plugin.group_download_list = self.plugin._normalize_group_list(
+                data.get("group_download_list")
+            )
+        if "private_download_enabled" in data:
+            self.plugin.private_download_enabled = bool(data["private_download_enabled"])
+        if "parse_all_group_messages" in data:
+            self.plugin.parse_all_group_messages = bool(data["parse_all_group_messages"])
         # 先确认目录可用再落盘，避免保存一个写不进去的路径
         try:
             os.makedirs(self.plugin.download_dir, exist_ok=True)

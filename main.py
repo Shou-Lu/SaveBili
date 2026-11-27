@@ -130,6 +130,12 @@ class SaveAnyBilibiliDownloader(Star):
         self.ytdlp_cookiefile = ""
         self.ytdlp_allow_any_site = False
 
+        # 群聊下载权限 / 解析行为
+        self.group_download_mode = "all"          # all | whitelist | blacklist
+        self.group_download_list = []             # 群号列表
+        self.private_download_enabled = True
+        self.parse_all_group_messages = False
+
         if config:
             self.download_dir = self._resolve_download_dir(config.get("download_dir"))
             self.max_size_mb = float(config.get("max_size_mb", self.max_size_mb))
@@ -140,6 +146,18 @@ class SaveAnyBilibiliDownloader(Star):
             self.ytdlp_cookiefile = str(config.get("ytdlp_cookiefile", "") or "").strip()
             self.ytdlp_allow_any_site = bool(
                 config.get("ytdlp_allow_any_site", self.ytdlp_allow_any_site)
+            )
+            self.group_download_mode = str(
+                config.get("group_download_mode", self.group_download_mode) or "all"
+            ).lower()
+            self.group_download_list = self._normalize_group_list(
+                config.get("group_download_list", self.group_download_list)
+            )
+            self.private_download_enabled = bool(
+                config.get("private_download_enabled", self.private_download_enabled)
+            )
+            self.parse_all_group_messages = bool(
+                config.get("parse_all_group_messages", self.parse_all_group_messages)
             )
 
         self._load_plugin_config()
@@ -290,6 +308,54 @@ class SaveAnyBilibiliDownloader(Star):
         return str(path)
 
     @staticmethod
+    def _normalize_group_list(value) -> list:
+        """把配置里的群号列表统一成去重后的字符串列表。
+
+        兼容 list、逗号/换行/空格分隔的字符串，以及单个群号。
+        """
+        if value is None:
+            return []
+        if isinstance(value, str):
+            parts = re.split(r"[\s,，;；]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            parts = []
+            for item in value:
+                parts.extend(re.split(r"[\s,，;；]+", str(item)))
+        else:
+            parts = [str(value)]
+        result = []
+        for part in parts:
+            part = str(part).strip()
+            if part and part not in result:
+                result.append(part)
+        return result
+
+    def is_download_allowed(self, event: AstrMessageEvent) -> bool:
+        """判断当前会话是否允许下载并发送视频；解析不受此限制。"""
+        try:
+            group_id = str(event.get_group_id() or "").strip()
+        except Exception:
+            group_id = ""
+        if not group_id:
+            return bool(self.private_download_enabled)
+        mode = (self.group_download_mode or "all").lower()
+        listed = group_id in (self.group_download_list or [])
+        if mode == "whitelist":
+            return listed
+        if mode == "blacklist":
+            return not listed
+        return True
+
+    @staticmethod
+    def build_download_denied_note(parse_only: bool) -> str:
+        if parse_only:
+            return "已解析该链接（仅解析模式，未下载视频）。"
+        return (
+            "已解析该链接，但当前群聊未开启下载功能，未发送视频。\n"
+            "如需下载：请在私聊中使用，或让管理员在插件配置中把本群加入下载白名单。"
+        )
+
+    @staticmethod
     def _generic_headers() -> dict:
         return {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -311,6 +377,7 @@ class SaveAnyBilibiliDownloader(Star):
             "请提供视频链接或 B 站 BV 号。",
             "B 站：视频、番剧、专栏、动态、收藏夹、合集。",
             f"多平台：{SUPPORTED_PLATFORM_TEXT}。",
+            "指令：/saveany <链接> 解析并下载；/parse <链接> 仅解析不下载。",
         ]
         if not ytdlp_available():
             lines.append("提示：当前环境未安装 yt-dlp，多平台下载暂不可用。")
@@ -337,6 +404,18 @@ class SaveAnyBilibiliDownloader(Star):
                     self.ytdlp_cookiefile = str(data.get("ytdlp_cookiefile") or "").strip()
                 if "ytdlp_allow_any_site" in data:
                     self.ytdlp_allow_any_site = bool(data.get("ytdlp_allow_any_site"))
+                if "group_download_mode" in data:
+                    self.group_download_mode = str(
+                        data.get("group_download_mode") or "all"
+                    ).lower()
+                if "group_download_list" in data:
+                    self.group_download_list = self._normalize_group_list(
+                        data.get("group_download_list")
+                    )
+                if "private_download_enabled" in data:
+                    self.private_download_enabled = bool(data.get("private_download_enabled"))
+                if "parse_all_group_messages" in data:
+                    self.parse_all_group_messages = bool(data.get("parse_all_group_messages"))
             except Exception as e:
                 logger.error(f"加载插件本地配置失败: {e}")
 
@@ -356,6 +435,10 @@ class SaveAnyBilibiliDownloader(Star):
             "ytdlp_cookie": self.ytdlp_cookie,
             "ytdlp_cookiefile": self.ytdlp_cookiefile,
             "ytdlp_allow_any_site": self.ytdlp_allow_any_site,
+            "group_download_mode": self.group_download_mode,
+            "group_download_list": self.group_download_list,
+            "private_download_enabled": self.private_download_enabled,
+            "parse_all_group_messages": self.parse_all_group_messages,
         }
         try:
             tmp_file = cfg_file.with_name(cfg_file.name + ".tmp")
@@ -907,15 +990,17 @@ class SaveAnyBilibiliDownloader(Star):
             name = name.encode("utf-8")[:limit_bytes].decode("utf-8", "ignore").rstrip()
         return name or "video"
 
+    def _event_target(self, event: AstrMessageEvent, url: str = "") -> Optional[str]:
+        """优先从指令参数找目标，找不到再扫整条消息。"""
+        return self.extract_media_target(url) or self.extract_media_target(event.message_str)
+
     @filter.command("saveany")
     async def saveany(self, event: AstrMessageEvent, url: str = ""):
         # 注意：不能在第一个 yield 之前调用 event.stop_event()。
         # AstrBot 的调度器检测到 is_stopped() 后会 break，不再恢复这个生成器，
         # 于是 yield 之后的下载/发送全部不会执行（表现就是“卡住没反应”）。
         try:
-            # 抖音等平台的分享文案通常带一大段说明，参数只取第一个词会丢链接，
-            # 因此先从参数里找，找不到再扫整条消息。
-            target = self.extract_media_target(url) or self.extract_media_target(event.message_str)
+            target = self._event_target(event, url)
             if not target:
                 yield event.plain_result(self.build_help_text())
                 return
@@ -924,21 +1009,36 @@ class SaveAnyBilibiliDownloader(Star):
         finally:
             event.stop_event()
 
+    @filter.command("parse", alias={"解析"})
+    async def parse_link(self, event: AstrMessageEvent, url: str = ""):
+        """/parse <链接>：只解析并展示信息，不下载视频。"""
+        try:
+            target = self._event_target(event, url)
+            if not target:
+                yield event.plain_result(self.build_help_text())
+                return
+            async for result in self._handle_request(event, target, parse_only=True):
+                yield result
+        finally:
+            event.stop_event()
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
-        # 使用 AstrBot 内置唤醒判断：只有 @ 机器人、带唤醒词或私聊消息才会处理，
-        # 不再对群聊中未 @ 机器人的普通链接自动下载。
-        if not event.is_at_or_wake_command:
+        # 解析全局可用：群聊默认需要 @ 机器人；开启 parse_all_group_messages 后，
+        # 普通群消息里的链接也会被解析（未 @ 时只解析、不下载）。
+        is_wake = bool(event.is_at_or_wake_command)
+        group_id = str(event.get_group_id() or "").strip()
+        if not is_wake and not (self.parse_all_group_messages and group_id):
             return
         message = event.message_str.strip()
-        # /saveany 交给指令处理器；唤醒前缀被框架剥离后消息可能以 "saveany" 开头
-        if re.match(r"^/?saveany(?:\s|$)", message):
+        # 指令交给对应的指令处理器；唤醒前缀被框架剥离后消息可能以指令名开头
+        if re.match(r"^/?(?:saveany|parse|解析)(?:\s|$)", message):
             return
         target = self.extract_media_target(message)
         if not target:
             return
         try:
-            async for result in self._handle_request(event, target):
+            async for result in self._handle_request(event, target, parse_only=not is_wake):
                 yield result
         finally:
             event.stop_event()
@@ -1092,16 +1192,19 @@ class SaveAnyBilibiliDownloader(Star):
         desc = re.sub(r'\s+', ' ', (desc or "").strip())
         return (desc[:max_len] + "...") if len(desc) > max_len else (desc or "（无简介）")
 
-    def build_video_notify(self, info: dict) -> str:
+    def build_video_notify(self, info: dict, downloading: bool = True) -> str:
         stat = info.get("stat", {}) or {}
-        return f"正在下载：\n{info.get('title', '未知')}\n\nUP主：{info.get('owner', '未知')}\n简介：{self._format_desc(info.get('desc'))}\n目前播放量：{stat.get('view', 0):,}"
+        prefix = "正在下载" if downloading else "视频信息"
+        return f"{prefix}：\n{info.get('title', '未知')}\n\nUP主：{info.get('owner', '未知')}\n简介：{self._format_desc(info.get('desc'))}\n目前播放量：{stat.get('view', 0):,}"
 
-    def build_bangumi_notify(self, info: dict, ep_title: str, index: str) -> str:
-        return f"正在下载番剧：\n{info.get('title', '未知')}\n集数：{index} / 共 {len(info.get('episodes', []))} 集\n\n本集标题：{ep_title or '（无标题）'}\n简介：{self._format_desc(info.get('desc'))}"
+    def build_bangumi_notify(self, info: dict, ep_title: str, index: str, downloading: bool = True) -> str:
+        prefix = "正在下载番剧" if downloading else "番剧信息"
+        return f"{prefix}：\n{info.get('title', '未知')}\n集数：{index} / 共 {len(info.get('episodes', []))} 集\n\n本集标题：{ep_title or '（无标题）'}\n简介：{self._format_desc(info.get('desc'))}"
 
-    def build_ytdlp_notify(self, info: dict) -> str:
+    def build_ytdlp_notify(self, info: dict, downloading: bool = True) -> str:
         platform = PLATFORM_LABELS.get(info.get("platform"), info.get("platform") or "多平台")
-        lines = [f"正在下载（{platform}）：", info.get("title") or "未知", ""]
+        prefix = "正在下载" if downloading else "视频信息"
+        lines = [f"{prefix}（{platform}）：", info.get("title") or "未知", ""]
         lines.append(f"作者：{info.get('uploader') or '未知'}")
         duration = self._format_duration(info.get("duration"))
         if duration:
@@ -1189,7 +1292,7 @@ class SaveAnyBilibiliDownloader(Star):
         logger.info(f"[短链] {url} -> {resolved}")
         return resolved
 
-    async def _handle_request(self, event: AstrMessageEvent, url_or_bvid: str):
+    async def _handle_request(self, event: AstrMessageEvent, url_or_bvid: str, parse_only: bool = False):
         """解析输入并逐个产出待发送的消息，由 AstrBot 负责实际发送。"""
         target = (url_or_bvid or "").strip()
         if not target:
@@ -1221,26 +1324,32 @@ class SaveAnyBilibiliDownloader(Star):
                 return
             info = {"type": "ytdlp", "id": target}
 
-        session_id = getattr(event, "unified_msg_origin", None) or getattr(event, "session_id", "default")
-        key = (str(session_id), target.strip())
-        now = time.time()
-        if now - self._recent_requests.get(key, 0) < 10:
-            logger.warning(f"检测到 10 秒内重复请求，已忽略: {target}")
-            yield event.plain_result("刚刚已处理过同一链接，请稍后再试。")
-            return
-        self._recent_requests[key] = now
+        # 解析始终可用；是否下载由 parse_only 和群聊权限共同决定
+        allow_download = (not parse_only) and self.is_download_allowed(event)
+        deny_note = "" if allow_download else self.build_download_denied_note(parse_only)
 
-        async for result in self._dispatch(event, info):
+        # 只对真正的下载请求做 10 秒去重，避免解析和下载互相挡
+        if allow_download:
+            session_id = getattr(event, "unified_msg_origin", None) or getattr(event, "session_id", "default")
+            key = (str(session_id), target.strip())
+            now = time.time()
+            if now - self._recent_requests.get(key, 0) < 10:
+                logger.warning(f"检测到 10 秒内重复请求，已忽略: {target}")
+                yield event.plain_result("刚刚已处理过同一链接，请稍后再试。")
+                return
+            self._recent_requests[key] = now
+
+        async for result in self._dispatch(event, info, allow_download, deny_note):
             yield result
 
-    async def _dispatch(self, event: AstrMessageEvent, info: dict):
+    async def _dispatch(self, event: AstrMessageEvent, info: dict, allow_download: bool = True, deny_note: str = ""):
         handlers = {
             "video": self._handle_video,
             "bangumi": self._handle_bangumi,
             "article": self._handle_article,
             "opus": self._handle_opus,
-            "favlist": lambda e, i: self._handle_list(e, "favlist", i),
-            "collection": lambda e, i: self._handle_list(e, "collection", i, info.get("mid", "")),
+            "favlist": lambda e, i, allow, note: self._handle_list(e, "favlist", i),
+            "collection": lambda e, i, allow, note: self._handle_list(e, "collection", i, info.get("mid", "")),
             "ytdlp": self._handle_ytdlp,
         }
         handler = handlers.get(info["type"])
@@ -1248,17 +1357,20 @@ class SaveAnyBilibiliDownloader(Star):
             yield event.plain_result("暂不支持该类型的链接。")
             return
 
-        logger.info(f"开始处理: type={info['type']}, id={info.get('id')}")
+        logger.info(
+            f"开始处理: type={info['type']}, id={info.get('id')}, "
+            f"download={'yes' if allow_download else 'no'}"
+        )
         try:
-            async for result in handler(event, info["id"]):
+            async for result in handler(event, info["id"], allow_download, deny_note):
                 if result is not None:
                     yield result
         except Exception:
             logger.error(f"处理 {info['type']} 失败: {traceback.format_exc()}")
             yield event.plain_result("处理过程中发生错误，请查看控制台日志。")
 
-    async def _handle_ytdlp(self, event, url):
-        """使用 yt-dlp 下载非 B 站平台的视频。"""
+    async def _handle_ytdlp(self, event, url, allow_download: bool = True, deny_note: str = ""):
+        """使用 yt-dlp 解析/下载非 B 站平台的视频。"""
         platform = detect_platform(url) or "ytdlp"
         label = PLATFORM_LABELS.get(platform, platform)
         if not ytdlp_available():
@@ -1275,19 +1387,29 @@ class SaveAnyBilibiliDownloader(Star):
             info = await ytdlp_probe(url, **common)
         except YtDlpError as e:
             logger.warning(f"[多平台] 解析失败 {url}: {e}")
-            self.record_download("video", url, False, platform=platform)
+            if allow_download:
+                self.record_download("video", url, False, platform=platform)
             yield event.plain_result(f"{label}解析失败：{e}")
             return
         except Exception:
             logger.error(f"[多平台] 解析异常: {traceback.format_exc()}")
-            self.record_download("video", url, False, platform=platform)
+            if allow_download:
+                self.record_download("video", url, False, platform=platform)
             yield event.plain_result(f"{label}解析失败，请查看控制台日志。")
             return
 
         title = info.get("title") or url
-        card = self._result(event, self.build_ytdlp_notify(info), info.get("thumbnail"))
+        card = self._result(
+            event,
+            self.build_ytdlp_notify(info, downloading=allow_download),
+            info.get("thumbnail"),
+        )
         if card is not None:
             yield card
+
+        if not allow_download:
+            yield event.plain_result(deny_note or self.build_download_denied_note(False))
+            return
 
         try:
             result = await ytdlp_download(
@@ -1313,16 +1435,24 @@ class SaveAnyBilibiliDownloader(Star):
         self.record_download("video", result.get("title") or title, True, size, platform=platform)
         yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
 
-    async def _handle_video(self, event, bvid):
+    async def _handle_video(self, event, bvid, allow_download: bool = True, deny_note: str = ""):
         info = await self.get_bilibili_video_info(bvid)
         if not info:
             yield event.plain_result("获取视频信息失败，请查看控制台日志。")
             return
 
         # 封面 + 文案合并成一条消息
-        card = self._result(event, self.build_video_notify(info), info.get("pic"))
+        card = self._result(
+            event,
+            self.build_video_notify(info, downloading=allow_download),
+            info.get("pic"),
+        )
         if card is not None:
             yield card
+
+        if not allow_download:
+            yield event.plain_result(deny_note or self.build_download_denied_note(False))
+            return
 
         url = await self.get_download_url(bvid, info.get("aid"), info.get("cid"))
         if not url:
@@ -1336,7 +1466,7 @@ class SaveAnyBilibiliDownloader(Star):
         else:
             yield event.plain_result("下载失败，可能文件过大或网络问题。")
 
-    async def _handle_bangumi(self, event, ep_or_ss):
+    async def _handle_bangumi(self, event, ep_or_ss, allow_download: bool = True, deny_note: str = ""):
         bangumi = await self.get_bangumi_info(ep_or_ss)
         if not bangumi:
             yield event.plain_result("番剧信息获取失败，请查看控制台日志。")
@@ -1354,12 +1484,21 @@ class SaveAnyBilibiliDownloader(Star):
             episodes = episodes[:1]
 
         for ep in episodes:
-            text = self.build_bangumi_notify(bangumi, ep.get('title'), ep.get('index'))
+            text = self.build_bangumi_notify(
+                bangumi, ep.get('title'), ep.get('index'), downloading=allow_download
+            )
             if only_first:
-                text += f"\n\n（整季共 {len(all_episodes)} 集，仅下载第 1 集）"
+                if allow_download:
+                    text += f"\n\n（整季共 {len(all_episodes)} 集，仅下载第 1 集）"
+                else:
+                    text += f"\n\n（整季共 {len(all_episodes)} 集）"
             card = self._result(event, text, bangumi.get("cover"))
             if card is not None:
                 yield card
+
+            if not allow_download:
+                yield event.plain_result(deny_note or self.build_download_denied_note(False))
+                return
 
             streams = await self.get_bangumi_playurl(ep["ep_id"], ep["cid"])
             if not streams or not streams.get("video_url"):
@@ -1592,7 +1731,7 @@ class SaveAnyBilibiliDownloader(Star):
             logger.error(f"文件下载异常: {traceback.format_exc()}")
             return False
 
-    async def _handle_article(self, event, cv_id):
+    async def _handle_article(self, event, cv_id, allow_download: bool = True, deny_note: str = ""):
         article_id = cv_id[2:] if cv_id.lower().startswith("cv") else cv_id
         url = f"https://api.bilibili.com/x/article/view?id={article_id}"
         try:
@@ -1606,21 +1745,27 @@ class SaveAnyBilibiliDownloader(Star):
                 logger.error(f"专栏 API 错误: code={data.get('code')}")
                 yield event.plain_result("专栏获取失败，请查看控制台日志。")
                 return
+            info_text = (
+                f"专栏：{d.get('title')}\n作者：{d.get('author', {}).get('name')}\n"
+                f"摘要：{self._format_desc(d.get('summary'))}"
+            )
+            if not allow_download:
+                yield event.plain_result(
+                    info_text + "\n\n" + (deny_note or self.build_download_denied_note(False))
+                )
+                return
             text = self._html_to_text(d.get("content", ""))
             txt_path = os.path.join(self.download_dir, f"{self._safe_filename(d.get('title', 'article'), 120)}.txt")
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(f"{d.get('title')}\n作者：{d.get('author', {}).get('name')}\n链接：https://www.bilibili.com/read/cv{article_id}\n\n{text}")
             self.record_download("article", d.get("title"), True, os.path.getsize(txt_path))
             # 标题、摘要与保存结果合成一条消息
-            yield event.plain_result(
-                f"专栏：{d.get('title')}\n作者：{d.get('author', {}).get('name')}\n"
-                f"摘要：{self._format_desc(d.get('summary'))}\n\n正文已保存至：{txt_path}"
-            )
+            yield event.plain_result(f"{info_text}\n\n正文已保存至：{txt_path}")
         except Exception as e:
             logger.error(f"专栏处理异常: {traceback.format_exc()}")
             yield event.plain_result("专栏处理失败，请查看控制台日志。")
 
-    async def _handle_opus(self, event, dynamic_id):
+    async def _handle_opus(self, event, dynamic_id, allow_download: bool = True, deny_note: str = ""):
         url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?timezone_offset=-480&id={dynamic_id}"
         try:
             async def fetch():
@@ -1636,14 +1781,24 @@ class SaveAnyBilibiliDownloader(Star):
             major = item.get("modules", {}).get("module_dynamic", {}).get("major") or {}
             archive = major.get("archive")
             if archive and archive.get("bvid"):
-                async for result in self._handle_video(event, archive["bvid"]):
+                async for result in self._handle_video(
+                    event, archive["bvid"], allow_download, deny_note
+                ):
                     if result is not None:
                         yield result
                 return
             text = item.get("modules", {}).get("module_dynamic", {}).get("desc", {}).get("text", "")
             images = [it.get("src") for it in (major.get("draw", {}) or {}).get("items", [])]
-            # 文案与全部配图放进同一条消息，避免一张图一条消息
-            card = self._result(event, f"动态内容：\n{text or '（无文字）'}", images=images)
+            if not allow_download:
+                # 解析仍然可用：只展示动态文字，不发送图片
+                card = self._result(
+                    event,
+                    f"动态内容：\n{text or '（无文字）'}\n\n"
+                    + (deny_note or self.build_download_denied_note(False)),
+                )
+            else:
+                # 文案与全部配图放进同一条消息，避免一张图一条消息
+                card = self._result(event, f"动态内容：\n{text or '（无文字）'}", images=images)
             if card is not None:
                 yield card
         except Exception as e:

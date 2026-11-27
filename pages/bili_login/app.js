@@ -113,6 +113,10 @@ createApp({
             ytdlp_cookie: '',
             ytdlp_cookiefile: '',
             ytdlp_allow_any_site: false,
+            group_download_mode: 'all',
+            group_download_list: '',
+            private_download_enabled: true,
+            parse_all_group_messages: false,
         });
         const configLoading = ref(false);
         const ytdlpInfo = ref({ available: false, version: '', platforms: '' });
@@ -409,6 +413,10 @@ createApp({
                 configForm.ytdlp_cookie = data.config.ytdlp_cookie || '';
                 configForm.ytdlp_cookiefile = data.config.ytdlp_cookiefile || '';
                 configForm.ytdlp_allow_any_site = data.config.ytdlp_allow_any_site === true;
+                configForm.group_download_mode = data.config.group_download_mode || 'all';
+                configForm.group_download_list = (data.config.group_download_list || []).join('\n');
+                configForm.private_download_enabled = data.config.private_download_enabled !== false;
+                configForm.parse_all_group_messages = data.config.parse_all_group_messages === true;
                 if (data.ytdlp) ytdlpInfo.value = data.ytdlp;
             }
         };
@@ -424,6 +432,10 @@ createApp({
                     ytdlp_cookie: configForm.ytdlp_cookie,
                     ytdlp_cookiefile: configForm.ytdlp_cookiefile,
                     ytdlp_allow_any_site: configForm.ytdlp_allow_any_site,
+                    group_download_mode: configForm.group_download_mode,
+                    group_download_list: configForm.group_download_list,
+                    private_download_enabled: configForm.private_download_enabled,
+                    parse_all_group_messages: configForm.parse_all_group_messages,
                 });
                 if (data.success) {
                     statusText.value = '配置已保存';
