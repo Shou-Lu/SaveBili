@@ -377,7 +377,7 @@ class SaveAnyBilibiliDownloader(Star):
             "请提供视频链接或 B 站 BV 号。",
             "B 站：视频、番剧、专栏、动态、收藏夹、合集。",
             f"多平台：{SUPPORTED_PLATFORM_TEXT}。",
-            "指令：/saveany <链接> 解析并下载；/parse <链接> 仅解析不下载。",
+            "指令：/saveany <链接> 解析并下载；/parse <链接> 仅解析；/groupid 查看群号。",
         ]
         if not ytdlp_available():
             lines.append("提示：当前环境未安装 yt-dlp，多平台下载暂不可用。")
@@ -1022,6 +1022,19 @@ class SaveAnyBilibiliDownloader(Star):
         finally:
             event.stop_event()
 
+    @filter.command("groupid", alias={"群号"})
+    async def group_id(self, event: AstrMessageEvent):
+        """查看当前群号，便于配置下载白名单/黑名单。"""
+        try:
+            gid = str(event.get_group_id() or "").strip()
+        except Exception:
+            gid = ""
+        if gid:
+            yield event.plain_result(f"本群群号：{gid}")
+        else:
+            yield event.plain_result("当前是私聊，没有群号。")
+        event.stop_event()
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         # 解析全局可用：群聊默认需要 @ 机器人；开启 parse_all_group_messages 后，
@@ -1032,7 +1045,7 @@ class SaveAnyBilibiliDownloader(Star):
             return
         message = event.message_str.strip()
         # 指令交给对应的指令处理器；唤醒前缀被框架剥离后消息可能以指令名开头
-        if re.match(r"^/?(?:saveany|parse|解析)(?:\s|$)", message):
+        if re.match(r"^/?(?:saveany|parse|解析|groupid|群号)(?:\s|$)", message):
             return
         target = self.extract_media_target(message)
         if not target:
@@ -1327,6 +1340,13 @@ class SaveAnyBilibiliDownloader(Star):
         # 解析始终可用；是否下载由 parse_only 和群聊权限共同决定
         allow_download = (not parse_only) and self.is_download_allowed(event)
         deny_note = "" if allow_download else self.build_download_denied_note(parse_only)
+        if deny_note and not parse_only:
+            try:
+                denied_group = str(event.get_group_id() or "").strip()
+            except Exception:
+                denied_group = ""
+            if denied_group:
+                deny_note += f"\n本群群号：{denied_group}（可加入下载白名单）"
 
         # 只对真正的下载请求做 10 秒去重，避免解析和下载互相挡
         if allow_download:

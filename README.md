@@ -26,6 +26,7 @@
 | --- | --- |
 | `/saveany <链接>` | 解析并下载视频；是否真正下载受群聊权限控制 |
 | `/parse <链接>`（别名 `/解析`） | 只解析并展示视频信息，不下载视频 |
+| `/groupid`（别名 `/群号`） | 查看当前群号，便于配置下载白名单/黑名单 |
 
 - **解析始终可用**：即使群聊没有开启下载，也会回复视频信息卡片，并提示当前未开启下载。
 - **下载按群聊控制**：`group_download_mode` 支持 `all`（全部允许）、`whitelist`（仅白名单）、`blacklist`（黑名单禁止），配合 `group_download_list` 群号列表使用。
@@ -78,6 +79,27 @@
 - 一键下载仅支持 Windows x64 与 Linux（x64 / arm64）；macOS 及其他系统请用 `brew install ffmpeg` 或系统包管理器安装，再点「重新检测」。
 - 下载文件名按 UTF-8 字节数截断，适配 Linux 255 字节的文件名限制。
 - 部分平台需要 FFmpeg 合并音视频，建议提前安装或使用页面上的「一键下载 FFmpeg」。
+
+## 消息平台
+
+已声明支持以下 AstrBot 平台适配器：
+
+- `aiocqhttp`：NapCat / LLOneBot 等 OneBot 实现。
+- `qq_official`：QQ 官方机器人（WebSocket）。
+- `qq_official_webhook`：QQ 官方机器人（Webhook）。
+- `telegram`。
+
+QQ 官方机器人接入方式：
+
+1. 在 AstrBot「平台」中添加「QQ 官方机器人（WebSocket）」或「QQ 官方机器人（Webhook）」。官方文档：<https://docs.astrbot.app/platform/qqofficial/websockets.html>、<https://docs.astrbot.app/platform/qqofficial/webhook.html>。
+2. 按 AstrBot 文档填写 AppID / AppSecret / Token 等信息并启用适配器。
+3. 启用本插件。插件会通过官方适配器发送文本、封面和视频文件。
+
+注意事项：
+
+- QQ 官方机器人群聊需要 @ 机器人；群号是 OpenID，可在群里发送 `/groupid` 查看，再填入下载白名单。
+- 官方机器人对主动消息频率和媒体大小有限制，建议按平台限制调整 `max_size_mb`。
+- 视频通过适配器的媒体上传接口发送；上传失败通常是平台限制或网络问题，控制台日志会给出原因。
 
 ## 配置项
 
