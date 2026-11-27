@@ -135,6 +135,7 @@ class SaveAnyBilibiliDownloader(Star):
         self.group_download_list = []             # 群号列表
         self.private_download_enabled = True
         self.parse_all_group_messages = False
+        self.parse_template = ""                  # 自定义解析文本模板，空 = 内置文案
 
         if config:
             self.download_dir = self._resolve_download_dir(config.get("download_dir"))
@@ -159,6 +160,7 @@ class SaveAnyBilibiliDownloader(Star):
             self.parse_all_group_messages = bool(
                 config.get("parse_all_group_messages", self.parse_all_group_messages)
             )
+            self.parse_template = str(config.get("parse_template", "") or "").strip()
 
         self._load_plugin_config()
         self.cookies = []
@@ -416,6 +418,8 @@ class SaveAnyBilibiliDownloader(Star):
                     self.private_download_enabled = bool(data.get("private_download_enabled"))
                 if "parse_all_group_messages" in data:
                     self.parse_all_group_messages = bool(data.get("parse_all_group_messages"))
+                if "parse_template" in data:
+                    self.parse_template = str(data.get("parse_template") or "").strip()
             except Exception as e:
                 logger.error(f"加载插件本地配置失败: {e}")
 
@@ -439,6 +443,7 @@ class SaveAnyBilibiliDownloader(Star):
             "group_download_list": self.group_download_list,
             "private_download_enabled": self.private_download_enabled,
             "parse_all_group_messages": self.parse_all_group_messages,
+            "parse_template": self.parse_template,
         }
         try:
             tmp_file = cfg_file.with_name(cfg_file.name + ".tmp")
@@ -1244,6 +1249,48 @@ class SaveAnyBilibiliDownloader(Star):
         return f"{minutes}:{secs:02d}"
 
     @staticmethod
+    def _format_count(value) -> str:
+        try:
+            return f"{int(value):,}"
+        except (TypeError, ValueError):
+            return ""
+
+    @staticmethod
+    def _desc_text(desc: str, max_len: int = 120) -> str:
+        text = re.sub(r"\s+", " ", (desc or "").strip())
+        if not text:
+            return ""
+        return text[:max_len] + ("..." if len(text) > max_len else "")
+
+    @staticmethod
+    def _format_ts_date(timestamp) -> str:
+        try:
+            return time.strftime("%Y-%m-%d", time.localtime(int(timestamp)))
+        except (TypeError, ValueError, OSError):
+            return ""
+
+    @staticmethod
+    def _format_upload_date(value) -> str:
+        text = str(value or "").strip()
+        if len(text) == 8 and text.isdigit():
+            return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+        return text
+
+    @staticmethod
+    def _apply_template(template: str, context: dict) -> str:
+        """替换 {placeholder}；未知占位符保持原样，{image} 交给消息链处理。"""
+        def repl(match):
+            key = match.group(1)
+            if key == "image":
+                return match.group(0)
+            if key not in context:
+                return match.group(0)
+            value = context.get(key)
+            return "" if value is None else str(value)
+
+        return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", repl, template or "")
+
+    @staticmethod
     def _normalize_image_url(url: str) -> str:
         if not url:
             return ""
@@ -1274,6 +1321,56 @@ class SaveAnyBilibiliDownloader(Star):
         if len(chain) == 1 and text:
             return event.plain_result(text)
         return event.chain_result(chain)
+
+    def _render_parsed_card(
+        self,
+        event: AstrMessageEvent,
+        context: dict,
+        default_text: str,
+        cover_url: str = "",
+    ):
+        """按自定义模板生成解析卡片；模板为空时使用内置文案。
+
+        `{image}` 会插入封面，并且可以放在模板任意位置；模板未包含该占位符时
+        不发送封面。模板渲染为空时回退到内置文案，避免无响应。
+        """
+        template = (self.parse_template or "").strip()
+        if not template:
+            return self._result(event, default_text, cover_url)
+
+        ctx = dict(context or {})
+        # 常用别名，模板里写 {author} / {description} 也能用
+        ctx.setdefault("author", ctx.get("owner", ""))
+        ctx.setdefault("uploader", ctx.get("owner", ""))
+        ctx.setdefault("description", ctx.get("desc", ""))
+        ctx.setdefault("play", ctx.get("view", ""))
+        ctx.setdefault("cover", ctx.get("image", ""))
+
+        text = self._apply_template(template, ctx)
+        image_url = cover_url or ctx.get("image") or ""
+
+        if "{image}" in text:
+            before, _, after = text.partition("{image}")
+            after = after.replace("{image}", "")
+            chain = []
+            if before.strip():
+                chain.append(Comp.Plain(before.strip("\n")))
+            if image_url:
+                image = self._image_component(self._normalize_image_url(image_url))
+                if image is not None:
+                    chain.append(image)
+            if after.strip():
+                chain.append(Comp.Plain(after.strip("\n")))
+            if not chain:
+                return self._result(event, default_text, cover_url)
+            if len(chain) == 1 and isinstance(chain[0], Comp.Plain):
+                return event.plain_result(chain[0].text)
+            return event.chain_result(chain)
+
+        text = text.replace("{image}", "").strip()
+        if not text:
+            return self._result(event, default_text, cover_url)
+        return event.plain_result(text)
 
     @staticmethod
     def _image_component(url: str):
@@ -1419,11 +1516,24 @@ class SaveAnyBilibiliDownloader(Star):
             return
 
         title = info.get("title") or url
-        card = self._result(
-            event,
-            self.build_ytdlp_notify(info, downloading=allow_download),
-            info.get("thumbnail"),
-        )
+        default_text = self.build_ytdlp_notify(info, downloading=allow_download)
+        context = {
+            "type": "视频",
+            "status": "正在下载" if allow_download else "视频信息",
+            "platform": label,
+            "title": title,
+            "owner": info.get("uploader") or "",
+            "desc": self._desc_text(info.get("description")),
+            "duration": self._format_duration(info.get("duration")),
+            "view": self._format_count(info.get("view")),
+            "like": self._format_count(info.get("like")),
+            "url": info.get("webpage_url") or url,
+            "id": info.get("id") or "",
+            "image": info.get("thumbnail") or "",
+            "date": self._format_upload_date(info.get("upload_date")),
+            "note": "",
+        }
+        card = self._render_parsed_card(event, context, default_text, info.get("thumbnail"))
         if card is not None:
             yield card
 
@@ -1462,11 +1572,25 @@ class SaveAnyBilibiliDownloader(Star):
             return
 
         # 封面 + 文案合并成一条消息
-        card = self._result(
-            event,
-            self.build_video_notify(info, downloading=allow_download),
-            info.get("pic"),
-        )
+        stat = info.get("stat", {}) or {}
+        default_text = self.build_video_notify(info, downloading=allow_download)
+        context = {
+            "type": "视频",
+            "status": "正在下载" if allow_download else "视频信息",
+            "platform": "B 站",
+            "title": info.get("title") or "",
+            "owner": info.get("owner") or "",
+            "desc": self._desc_text(info.get("desc")),
+            "duration": self._format_duration(info.get("duration")),
+            "view": self._format_count(stat.get("view")),
+            "like": self._format_count(stat.get("like")),
+            "url": f"https://www.bilibili.com/video/{bvid}",
+            "id": bvid,
+            "image": info.get("pic") or "",
+            "date": self._format_ts_date(info.get("pubdate")),
+            "note": "",
+        }
+        card = self._render_parsed_card(event, context, default_text, info.get("pic"))
         if card is not None:
             yield card
 
@@ -1504,15 +1628,36 @@ class SaveAnyBilibiliDownloader(Star):
             episodes = episodes[:1]
 
         for ep in episodes:
-            text = self.build_bangumi_notify(
+            note = ""
+            if only_first:
+                note = f"（整季共 {len(all_episodes)} 集"
+                note += "，仅下载第 1 集）" if allow_download else "）"
+            default_text = self.build_bangumi_notify(
                 bangumi, ep.get('title'), ep.get('index'), downloading=allow_download
             )
-            if only_first:
-                if allow_download:
-                    text += f"\n\n（整季共 {len(all_episodes)} 集，仅下载第 1 集）"
-                else:
-                    text += f"\n\n（整季共 {len(all_episodes)} 集）"
-            card = self._result(event, text, bangumi.get("cover"))
+            if note:
+                default_text += f"\n\n{note}"
+            context = {
+                "type": "番剧",
+                "status": "正在下载" if allow_download else "番剧信息",
+                "platform": "B 站",
+                "title": bangumi.get("title") or "",
+                "owner": "B 站番剧",
+                "desc": self._desc_text(bangumi.get("desc")),
+                "duration": "",
+                "view": "",
+                "like": "",
+                "url": f"https://www.bilibili.com/bangumi/play/ep{ep.get('ep_id')}",
+                "id": str(ep.get("ep_id") or ""),
+                "image": bangumi.get("cover") or "",
+                "date": "",
+                "index": str(ep.get("index") or ""),
+                "episode": str(ep.get("index") or ""),
+                "episodes": str(len(all_episodes)),
+                "ep_title": ep.get("title") or "",
+                "note": note,
+            }
+            card = self._render_parsed_card(event, context, default_text, bangumi.get("cover"))
             if card is not None:
                 yield card
 
@@ -1549,7 +1694,7 @@ class SaveAnyBilibiliDownloader(Star):
             if not vd:
                 logger.error(f"视频 API 缺少 data 字段")
                 return None
-            return {"bvid": vd.get("bvid"), "aid": vd.get("aid"), "cid": vd.get("cid"), "title": vd.get("title"), "desc": vd.get("desc"), "pic": vd.get("pic"), "owner": vd.get("owner", {}).get("name"), "stat": vd.get("stat", {})}
+            return {"bvid": vd.get("bvid"), "aid": vd.get("aid"), "cid": vd.get("cid"), "title": vd.get("title"), "desc": vd.get("desc"), "pic": vd.get("pic"), "owner": vd.get("owner", {}).get("name"), "stat": vd.get("stat", {}), "duration": vd.get("duration"), "pubdate": vd.get("pubdate")}
         except Exception as e:
             logger.error(f"视频解析异常: {traceback.format_exc()}")
             return None

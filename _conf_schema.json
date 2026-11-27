@@ -69,5 +69,11 @@
     "description": "群聊中无需 @ 也解析视频链接（仅解析，不下载）",
     "default": false,
     "hint": "开启后，群里的视频链接会被解析并回复信息卡片，但不会自动下载；下载仍需 @ 机器人且群聊已开启下载。"
+  },
+  "parse_template": {
+    "type": "text",
+    "description": "自定义解析文本模板（留空使用内置文案）",
+    "default": "",
+    "hint": "占位符：{image} {title} {owner} {desc} {platform} {duration} {view} {like} {url} {id} {type} {status} {date} {note}；番剧额外支持 {index} {episode} {episodes} {ep_title}。{image} 会插入视频封面，可放在任意位置。"
   }
 }

@@ -33,6 +33,47 @@
 - `private_download_enabled` 控制私聊是否允许下载。
 - `parse_all_group_messages` 开启后，群聊里不 @ 机器人也会解析视频链接，但只回复信息、不下载；下载仍需 @ 机器人且群聊已开启下载。
 
+### 自定义解析文本
+
+配置项 `parse_template` 可以替换解析后的信息卡片文案；留空则使用内置文案。
+
+示例：
+
+```text
+{image}
+{status}：{title}
+
+作者：{owner}
+平台：{platform}
+时长：{duration}
+播放：{view}
+简介：{desc}
+```
+
+可用占位符：
+
+| 占位符 | 说明 |
+| --- | --- |
+| `{image}` | 视频封面；可放在任意位置，不写则不发送封面 |
+| `{title}` | 标题 |
+| `{owner}` / `{author}` / `{uploader}` | 作者 / UP 主 |
+| `{desc}` / `{description}` | 简介（自动截断） |
+| `{platform}` | 平台，如 B 站、抖音、YouTube |
+| `{duration}` | 时长，如 `3:25` |
+| `{view}` / `{play}` | 播放量 |
+| `{like}` | 点赞数 |
+| `{url}` | 原始链接 |
+| `{id}` | 视频 ID |
+| `{type}` | 视频 / 番剧 |
+| `{status}` | 正在下载 / 视频信息 / 番剧信息 |
+| `{date}` | 发布日期 |
+| `{note}` | 番剧整季提示 |
+| `{index}` / `{episode}` | 番剧集数 |
+| `{episodes}` | 番剧总集数 |
+| `{ep_title}` | 番剧本集标题 |
+
+模板应用于 B 站视频、番剧和 yt-dlp 视频信息卡片。未知占位符会原样保留，方便发现拼写错误；模板渲染为空时会回退到内置文案。
+
 ### 扫码登录支持情况
 
 | 平台 | 扫码登录 | 说明 |
@@ -115,6 +156,7 @@ QQ 官方机器人接入方式：
 - `group_download_list`：群号列表，白名单/黑名单模式下使用。
 - `private_download_enabled`：私聊是否允许下载，默认开启。
 - `parse_all_group_messages`：群聊无需 @ 也解析链接（仅解析、不下载），默认关闭。
+- `parse_template`：自定义解析文本模板，留空使用内置文案；支持 `{image}` 等占位符。
 
 ## 依赖
 

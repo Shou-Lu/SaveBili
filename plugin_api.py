@@ -792,6 +792,7 @@ class PluginAPI:
                 "group_download_list": self.plugin.group_download_list,
                 "private_download_enabled": self.plugin.private_download_enabled,
                 "parse_all_group_messages": self.plugin.parse_all_group_messages,
+                "parse_template": self.plugin.parse_template,
             },
             "ytdlp": self.plugin.ytdlp_status(),
         })
@@ -830,6 +831,8 @@ class PluginAPI:
             self.plugin.private_download_enabled = bool(data["private_download_enabled"])
         if "parse_all_group_messages" in data:
             self.plugin.parse_all_group_messages = bool(data["parse_all_group_messages"])
+        if "parse_template" in data:
+            self.plugin.parse_template = str(data.get("parse_template") or "").strip()
         # 先确认目录可用再落盘，避免保存一个写不进去的路径
         try:
             os.makedirs(self.plugin.download_dir, exist_ok=True)

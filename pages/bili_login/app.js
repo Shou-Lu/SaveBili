@@ -117,6 +117,7 @@ createApp({
             group_download_list: '',
             private_download_enabled: true,
             parse_all_group_messages: false,
+            parse_template: '',
         });
         const configLoading = ref(false);
         const ytdlpInfo = ref({ available: false, version: '', platforms: '' });
@@ -417,6 +418,7 @@ createApp({
                 configForm.group_download_list = (data.config.group_download_list || []).join('\n');
                 configForm.private_download_enabled = data.config.private_download_enabled !== false;
                 configForm.parse_all_group_messages = data.config.parse_all_group_messages === true;
+                configForm.parse_template = data.config.parse_template || '';
                 if (data.ytdlp) ytdlpInfo.value = data.ytdlp;
             }
         };
@@ -436,6 +438,7 @@ createApp({
                     group_download_list: configForm.group_download_list,
                     private_download_enabled: configForm.private_download_enabled,
                     parse_all_group_messages: configForm.parse_all_group_messages,
+                    parse_template: configForm.parse_template,
                 });
                 if (data.success) {
                     statusText.value = '配置已保存';

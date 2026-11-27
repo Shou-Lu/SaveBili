@@ -260,6 +260,20 @@ export const TEMPLATE = `
             </div>
 
             <div class="form-group" style="margin-top: 20px;">
+                <h2>解析文本模板</h2>
+                <p class="hint">
+                    留空使用内置文案。模板中的 {image} 会插入视频封面，可放在任意位置；不写 {image} 则不发送封面。
+                </p>
+                <textarea v-model="configForm.parse_template" rows="7" placeholder="{image}&#10;{status}：{title}&#10;&#10;作者：{owner}&#10;平台：{platform}&#10;时长：{duration}&#10;播放：{view}&#10;简介：{desc}"></textarea>
+                <p class="hint">
+                    通用占位符：{image} {title} {owner} {desc} {platform} {duration} {view} {like} {url} {id} {type} {status} {date} {note}
+                    <br>
+                    番剧额外：{index} {episode} {episodes} {ep_title}
+                </p>
+                <button @click="saveConfig" :disabled="configLoading">{{ configLoading ? '保存中...' : '保存配置' }}</button>
+            </div>
+
+            <div class="form-group" style="margin-top: 20px;">
                 <h2>FFmpeg 环境配置</h2>
                 <p class="hint">FFmpeg 用于合并 DASH 格式的分离音视频流，缺少它视频将无声。已安装的系统版本会被自动识别。</p>
                 <div style="margin: 10px 0; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px;">
