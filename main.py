@@ -48,7 +48,7 @@ logger.info(gk_art)
 
 @register("astrbot_plugin_bili_downloader", "守禄",
           "B 站原生解析 + yt-dlp 多平台下载，支持视频/番剧/专栏/收藏夹/合集/动态与抖音等站点，多 Cookie 管理",
-          "1.3.2",
+          "1.3.3",
           "https://github.com/shou-lu/SaveBili")
 class SaveAnyBilibiliDownloader(Star):
 
@@ -957,7 +957,7 @@ class SaveAnyBilibiliDownloader(Star):
             logger.warning(f"[初始化] 创建下载目录失败: {e}")
         self.plugin_api.register(self.context)
         logger.info(
-            f"视频下载插件已启动 (1.3.2) 下载目录: {self.download_dir} | "
+            f"视频下载插件已启动 (1.3.3) 下载目录: {self.download_dir} | "
             f"yt-dlp: {ytdlp_version() or '未安装'}"
         )
         # 探测是全异步的（create_subprocess_exec），不会阻塞事件循环
