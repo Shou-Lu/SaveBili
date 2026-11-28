@@ -171,6 +171,9 @@ class SaveAnyBilibiliDownloader(Star):
         self.session = None
         self.plugin_api = PluginAPI(self)
         self._recent_requests = {}
+        self._pending_downloads = {}
+        self._pending_seq = {}
+        self._pending_ttl = 1800
 
     # ============ 数据目录 ============
     PLUGIN_DIR_NAME = "astrbot_plugin_bili_downloader"
@@ -356,6 +359,87 @@ class SaveAnyBilibiliDownloader(Star):
             "已解析该链接，但当前群聊未开启下载功能，未发送视频。\n"
             "如需下载：请在私聊中使用，或让管理员在插件配置中把本群加入下载白名单。"
         )
+
+    # ============ 待下载缓存（先解析，后用指令下载） ============
+    @staticmethod
+    def _session_key(event: AstrMessageEvent) -> str:
+        return str(
+            getattr(event, "unified_msg_origin", None)
+            or getattr(event, "session_id", "default")
+        )
+
+    def _cleanup_pending(self, session: str) -> None:
+        now = time.time()
+        items = [
+            item for item in self._pending_downloads.get(session, [])
+            if now - item.get("created", 0) <= self._pending_ttl
+        ]
+        self._pending_downloads[session] = items[-10:]
+
+    def _register_pending(self, event: AstrMessageEvent, entry: dict) -> str:
+        session = self._session_key(event)
+        self._cleanup_pending(session)
+        seq = int(self._pending_seq.get(session, 0)) + 1
+        self._pending_seq[session] = seq
+        pending_id = f"bd{seq}"
+        item = dict(entry)
+        item.update({
+            "id": pending_id,
+            "num": seq,
+            "created": time.time(),
+            "downloading": False,
+        })
+        items = self._pending_downloads.setdefault(session, [])
+        items.append(item)
+        if len(items) > 10:
+            del items[:-10]
+        return pending_id
+
+    @staticmethod
+    def _pending_hint(pending_id: str, label: str = "视频文件") -> str:
+        return f"💡 回复「下载」或发送 /{pending_id} 可获取{label}"
+
+    def _has_pending(self, event: AstrMessageEvent) -> bool:
+        session = self._session_key(event)
+        self._cleanup_pending(session)
+        return bool(self._pending_downloads.get(session))
+
+    def _find_pending(self, event: AstrMessageEvent, number: int):
+        session = self._session_key(event)
+        self._cleanup_pending(session)
+        items = self._pending_downloads.get(session, [])
+        if not items:
+            return None
+        if not number:
+            return items[-1]
+        for item in items:
+            if int(item.get("num", -1)) == number:
+                return item
+        return None
+
+    def _remove_pending(self, event: AstrMessageEvent, item) -> None:
+        session = self._session_key(event)
+        items = self._pending_downloads.get(session, [])
+        self._pending_downloads[session] = [
+            it for it in items if it is not item and it.get("id") != item.get("id")
+        ]
+
+    @staticmethod
+    def _parse_pending_request(message: str) -> Optional[int]:
+        """解析「下载」/「/bd1」/「/bd 1」等请求，返回编号；0 表示最近一条。"""
+        text = (message or "").strip()
+        if not text:
+            return None
+        text = text.strip("。.!！?？、,，")
+        match = re.match(r"^/?bd(\d+)$", text, re.I)
+        if match:
+            return int(match.group(1))
+        match = re.match(r"^/?bd(?:\s+(\d+))?$", text, re.I)
+        if match:
+            return int(match.group(1)) if match.group(1) else 0
+        if text in ("下载", "下载吧", "下载视频", "/下载", "/下载吧"):
+            return 0
+        return None
 
     @staticmethod
     def _generic_headers() -> dict:
@@ -1009,7 +1093,7 @@ class SaveAnyBilibiliDownloader(Star):
             if not target:
                 yield event.plain_result(self.build_help_text())
                 return
-            async for result in self._handle_request(event, target):
+            async for result in self._handle_request(event, target, explicit=True):
                 yield result
         finally:
             event.stop_event()
@@ -1040,15 +1124,96 @@ class SaveAnyBilibiliDownloader(Star):
             yield event.plain_result("当前是私聊，没有群号。")
         event.stop_event()
 
+    async def _handle_pending_download(self, event: AstrMessageEvent, number: int):
+        """用缓存的解析结果下载，不重新请求视频信息。"""
+        item = self._find_pending(event, number)
+        if not item:
+            yield event.plain_result("没有找到对应的解析结果，请重新发送链接。")
+            return
+        if item.get("downloading"):
+            yield event.plain_result("这个内容正在下载，请稍候。")
+            return
+        item["downloading"] = True
+        ok = False
+        try:
+            kind = item.get("kind")
+            if kind == "bilibili_video":
+                path = await self._perform_video_download(item["bvid"], item["info"])
+                if path:
+                    ok = True
+                    yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
+                else:
+                    yield event.plain_result("下载失败，可能文件过大或网络问题。")
+            elif kind == "bangumi":
+                path = await self._perform_bangumi_download(
+                    item["ep"], item.get("bangumi_title") or ""
+                )
+                if path:
+                    ok = True
+                    yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
+                else:
+                    yield event.plain_result("下载失败，可能文件过大或网络问题。")
+            elif kind == "ytdlp":
+                result, error = await self._perform_ytdlp_download(
+                    item.get("url") or "",
+                    item.get("info") or {},
+                    item.get("platform") or "ytdlp",
+                )
+                if result:
+                    ok = True
+                    yield event.chain_result([Comp.Video.fromFileSystem(path=result["path"])])
+                else:
+                    yield event.plain_result(error or "下载失败，请查看控制台日志。")
+            elif kind == "article":
+                txt_path = self._save_article_text(
+                    item.get("article_id") or "",
+                    item.get("title") or "article",
+                    item.get("author") or "",
+                    item.get("content") or "",
+                )
+                ok = True
+                yield event.plain_result(
+                    f"专栏：{item.get('title') or ''}\n作者：{item.get('author') or ''}\n\n"
+                    f"正文已保存至：{txt_path}"
+                )
+            elif kind == "opus":
+                card = self._result(
+                    event,
+                    f"动态内容：\n{item.get('text') or '（无文字）'}",
+                    images=item.get("images") or [],
+                )
+                if card is not None:
+                    ok = True
+                    yield card
+            else:
+                yield event.plain_result("该解析结果暂不支持下载。")
+        except Exception:
+            logger.error(f"[待下载] 下载失败: {traceback.format_exc()}")
+            yield event.plain_result("下载失败，请查看控制台日志。")
+        finally:
+            item["downloading"] = False
+        if ok:
+            self._remove_pending(event, item)
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
+        message = event.message_str.strip()
+        # 先处理「下载」/「/bd1」这类针对已解析内容的指令；即使群里没有 @ 也生效
+        pending_request = self._parse_pending_request(message)
+        if pending_request is not None and self._has_pending(event):
+            try:
+                async for result in self._handle_pending_download(event, pending_request):
+                    yield result
+            finally:
+                event.stop_event()
+            return
+
         # 解析全局可用：群聊默认需要 @ 机器人；开启 parse_all_group_messages 后，
         # 普通群消息里的链接也会被解析（未 @ 时只解析、不下载）。
         is_wake = bool(event.is_at_or_wake_command)
         group_id = str(event.get_group_id() or "").strip()
         if not is_wake and not (self.parse_all_group_messages and group_id):
             return
-        message = event.message_str.strip()
         # 指令交给对应的指令处理器；唤醒前缀被框架剥离后消息可能以指令名开头
         if re.match(r"^/?(?:saveany|parse|解析|groupid|群号)(?:\s|$)", message):
             return
@@ -1402,7 +1567,7 @@ class SaveAnyBilibiliDownloader(Star):
         logger.info(f"[短链] {url} -> {resolved}")
         return resolved
 
-    async def _handle_request(self, event: AstrMessageEvent, url_or_bvid: str, parse_only: bool = False):
+    async def _handle_request(self, event: AstrMessageEvent, url_or_bvid: str, parse_only: bool = False, explicit: bool = False):
         """解析输入并逐个产出待发送的消息，由 AstrBot 负责实际发送。"""
         target = (url_or_bvid or "").strip()
         if not target:
@@ -1434,8 +1599,8 @@ class SaveAnyBilibiliDownloader(Star):
                 return
             info = {"type": "ytdlp", "id": target}
 
-        # 解析始终可用；是否下载由 parse_only 和群聊权限共同决定
-        allow_download = (not parse_only) and self.is_download_allowed(event)
+        # 解析始终可用；显式指令（/saveany、/bd）可以绕过群聊的“默认下载”限制
+        allow_download = (not parse_only) and (explicit or self.is_download_allowed(event))
         deny_note = "" if allow_download else self.build_download_denied_note(parse_only)
         if deny_note and not parse_only:
             try:
@@ -1485,6 +1650,36 @@ class SaveAnyBilibiliDownloader(Star):
         except Exception:
             logger.error(f"处理 {info['type']} 失败: {traceback.format_exc()}")
             yield event.plain_result("处理过程中发生错误，请查看控制台日志。")
+
+    async def _perform_ytdlp_download(self, url: str, info: dict, platform: str):
+        """下载 yt-dlp 视频并记录统计；返回 (result, error_message)。"""
+        platform_cookie = self.get_platform_cookie(platform)
+        common = {
+            "proxy": self.ytdlp_proxy,
+            "cookie": platform_cookie or self.ytdlp_cookie,
+            "cookiefile": "" if (platform_cookie or self.ytdlp_cookie) else self._resolve_optional_path(self.ytdlp_cookiefile),
+        }
+        title = info.get("title") or url
+        try:
+            result = await ytdlp_download(
+                info.get("download_url") or url,
+                out_dir=self.download_dir,
+                max_size_mb=self.max_size_mb,
+                ffmpeg_path=await self.find_ffmpeg(),
+                **common,
+            )
+        except YtDlpError as e:
+            logger.warning(f"[多平台] 下载失败 {url}: {e}")
+            self.record_download("video", title, False, platform=platform)
+            return None, f"下载失败：{e}"
+        except Exception:
+            logger.error(f"[多平台] 下载异常: {traceback.format_exc()}")
+            self.record_download("video", title, False, platform=platform)
+            return None, "下载失败，请查看控制台日志。"
+        path = result.get("path")
+        size = int(result.get("filesize") or 0)
+        self.record_download("video", result.get("title") or title, True, size, platform=platform)
+        return result, ""
 
     async def _handle_ytdlp(self, event, url, allow_download: bool = True, deny_note: str = ""):
         """使用 yt-dlp 解析/下载非 B 站平台的视频。"""
@@ -1538,32 +1733,31 @@ class SaveAnyBilibiliDownloader(Star):
             yield card
 
         if not allow_download:
-            yield event.plain_result(deny_note or self.build_download_denied_note(False))
+            pending_id = self._register_pending(event, {
+                "kind": "ytdlp",
+                "url": url,
+                "info": info,
+                "platform": platform,
+                "title": title,
+                "label": "视频文件",
+            })
+            yield event.plain_result(self._pending_hint(pending_id))
             return
 
-        try:
-            result = await ytdlp_download(
-                info.get("download_url") or url,
-                out_dir=self.download_dir,
-                max_size_mb=self.max_size_mb,
-                ffmpeg_path=await self.find_ffmpeg(),
-                **common,
-            )
-        except YtDlpError as e:
-            logger.warning(f"[多平台] 下载失败 {url}: {e}")
-            self.record_download("video", title, False, platform=platform)
-            yield event.plain_result(f"下载失败：{e}")
+        result, error = await self._perform_ytdlp_download(url, info, platform)
+        if not result:
+            yield event.plain_result(error)
             return
-        except Exception:
-            logger.error(f"[多平台] 下载异常: {traceback.format_exc()}")
-            self.record_download("video", title, False, platform=platform)
-            yield event.plain_result("下载失败，请查看控制台日志。")
-            return
+        yield event.chain_result([Comp.Video.fromFileSystem(path=result["path"])])
 
-        path = result.get("path")
-        size = int(result.get("filesize") or 0)
-        self.record_download("video", result.get("title") or title, True, size, platform=platform)
-        yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
+    async def _perform_video_download(self, bvid: str, info: dict) -> str:
+        url = await self.get_download_url(bvid, info.get("aid"), info.get("cid"))
+        if not url:
+            return None
+        path = await self.download_file(url, info["title"], None)
+        ok = bool(path and os.path.exists(path))
+        self.record_download("video", info["title"], ok, os.path.getsize(path) if ok else 0)
+        return path if ok else None
 
     async def _handle_video(self, event, bvid, allow_download: bool = True, deny_note: str = ""):
         info = await self.get_bilibili_video_info(bvid)
@@ -1595,20 +1789,31 @@ class SaveAnyBilibiliDownloader(Star):
             yield card
 
         if not allow_download:
-            yield event.plain_result(deny_note or self.build_download_denied_note(False))
+            pending_id = self._register_pending(event, {
+                "kind": "bilibili_video",
+                "bvid": bvid,
+                "info": info,
+                "title": info.get("title") or bvid,
+                "label": "视频文件",
+            })
+            yield event.plain_result(self._pending_hint(pending_id))
             return
 
-        url = await self.get_download_url(bvid, info.get("aid"), info.get("cid"))
-        if not url:
-            yield event.plain_result("获取下载地址失败，请查看控制台日志。")
-            return
-        path = await self.download_file(url, info["title"], None)
-        ok = bool(path and os.path.exists(path))
-        self.record_download("video", info["title"], ok, os.path.getsize(path) if ok else 0)
-        if ok:
+        path = await self._perform_video_download(bvid, info)
+        if path:
             yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
         else:
             yield event.plain_result("下载失败，可能文件过大或网络问题。")
+
+    async def _perform_bangumi_download(self, ep: dict, bangumi_title: str) -> str:
+        streams = await self.get_bangumi_playurl(ep["ep_id"], ep["cid"])
+        if not streams or not streams.get("video_url"):
+            return None
+        title = f"{bangumi_title} - {ep.get('index')} {ep.get('title')}".strip()
+        path = await self.download_file(streams["video_url"], title, streams.get("audio_url"))
+        ok = bool(path and os.path.exists(path))
+        self.record_download("bangumi", title, ok, os.path.getsize(path) if ok else 0)
+        return path if ok else None
 
     async def _handle_bangumi(self, event, ep_or_ss, allow_download: bool = True, deny_note: str = ""):
         bangumi = await self.get_bangumi_info(ep_or_ss)
@@ -1662,19 +1867,19 @@ class SaveAnyBilibiliDownloader(Star):
                 yield card
 
             if not allow_download:
-                yield event.plain_result(deny_note or self.build_download_denied_note(False))
+                title = f"{bangumi.get('title', '')} - {ep.get('index')} {ep.get('title')}".strip()
+                pending_id = self._register_pending(event, {
+                    "kind": "bangumi",
+                    "ep": ep,
+                    "bangumi_title": bangumi.get("title") or "",
+                    "title": title,
+                    "label": "视频文件",
+                })
+                yield event.plain_result(self._pending_hint(pending_id))
                 return
 
-            streams = await self.get_bangumi_playurl(ep["ep_id"], ep["cid"])
-            if not streams or not streams.get("video_url"):
-                yield event.plain_result(f"第 {ep.get('index')} 集解析失败，请查看控制台输出。")
-                continue
-
-            title = f"{bangumi['title']} - {ep.get('index')} {ep.get('title')}".strip()
-            path = await self.download_file(streams["video_url"], title, streams.get("audio_url"))
-            ok = bool(path and os.path.exists(path))
-            self.record_download("bangumi", title, ok, os.path.getsize(path) if ok else 0)
-            if ok:
+            path = await self._perform_bangumi_download(ep, bangumi.get("title") or "")
+            if path:
                 yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
             else:
                 yield event.plain_result(f"第 {ep.get('index')} 集下载失败。")
@@ -1896,6 +2101,14 @@ class SaveAnyBilibiliDownloader(Star):
             logger.error(f"文件下载异常: {traceback.format_exc()}")
             return False
 
+    def _save_article_text(self, article_id: str, title: str, author: str, content: str) -> str:
+        text = self._html_to_text(content)
+        txt_path = os.path.join(self.download_dir, f"{self._safe_filename(title or 'article', 120)}.txt")
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(f"{title}\n作者：{author}\n链接：https://www.bilibili.com/read/cv{article_id}\n\n{text}")
+        self.record_download("article", title, True, os.path.getsize(txt_path))
+        return txt_path
+
     async def _handle_article(self, event, cv_id, allow_download: bool = True, deny_note: str = ""):
         article_id = cv_id[2:] if cv_id.lower().startswith("cv") else cv_id
         url = f"https://api.bilibili.com/x/article/view?id={article_id}"
@@ -1915,15 +2128,22 @@ class SaveAnyBilibiliDownloader(Star):
                 f"摘要：{self._format_desc(d.get('summary'))}"
             )
             if not allow_download:
-                yield event.plain_result(
-                    info_text + "\n\n" + (deny_note or self.build_download_denied_note(False))
-                )
+                pending_id = self._register_pending(event, {
+                    "kind": "article",
+                    "article_id": article_id,
+                    "title": d.get("title") or "",
+                    "author": d.get("author", {}).get("name") or "",
+                    "content": d.get("content") or "",
+                    "label": "正文",
+                })
+                yield event.plain_result(f"{info_text}\n\n{self._pending_hint(pending_id, '正文')}")
                 return
-            text = self._html_to_text(d.get("content", ""))
-            txt_path = os.path.join(self.download_dir, f"{self._safe_filename(d.get('title', 'article'), 120)}.txt")
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(f"{d.get('title')}\n作者：{d.get('author', {}).get('name')}\n链接：https://www.bilibili.com/read/cv{article_id}\n\n{text}")
-            self.record_download("article", d.get("title"), True, os.path.getsize(txt_path))
+            txt_path = self._save_article_text(
+                article_id,
+                d.get("title") or "article",
+                d.get("author", {}).get("name") or "",
+                d.get("content") or "",
+            )
             # 标题、摘要与保存结果合成一条消息
             yield event.plain_result(f"{info_text}\n\n正文已保存至：{txt_path}")
         except Exception as e:
@@ -1955,11 +2175,17 @@ class SaveAnyBilibiliDownloader(Star):
             text = item.get("modules", {}).get("module_dynamic", {}).get("desc", {}).get("text", "")
             images = [it.get("src") for it in (major.get("draw", {}) or {}).get("items", [])]
             if not allow_download:
-                # 解析仍然可用：只展示动态文字，不发送图片
+                # 解析仍然可用：只展示动态文字，不发送图片；缓存后可用指令发送
+                pending_id = self._register_pending(event, {
+                    "kind": "opus",
+                    "text": text,
+                    "images": images,
+                    "label": "图片",
+                })
                 card = self._result(
                     event,
                     f"动态内容：\n{text or '（无文字）'}\n\n"
-                    + (deny_note or self.build_download_denied_note(False)),
+                    + self._pending_hint(pending_id, "图片"),
                 )
             else:
                 # 文案与全部配图放进同一条消息，避免一张图一条消息

@@ -209,8 +209,18 @@ export const TEMPLATE = `
                 <input v-model="configForm.download_dir" type="text">
                 <label>最大文件大小 (MB)</label>
                 <input v-model="configForm.max_size_mb" type="number" min="1">
-                <label>画质代码（B 站）</label>
-                <input v-model="configForm.quality" type="number" min="1">
+                <label>清晰度（B 站）</label>
+                <select v-model.number="configForm.quality">
+                    <option :value="16">360P</option>
+                    <option :value="32">480P</option>
+                    <option :value="64">720P</option>
+                    <option :value="80">1080P</option>
+                    <option :value="112">1080P+</option>
+                    <option :value="116">1080P60</option>
+                    <option :value="120">4K</option>
+                    <option :value="125">HDR</option>
+                    <option :value="127">8K</option>
+                </select>
             </div>
 
             <div class="form-group" style="margin-top: 20px;">

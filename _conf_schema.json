@@ -11,8 +11,9 @@
   },
   "quality": {
     "type": "int",
-    "description": "B 站默认画质代码：80=1080P，112=1080P+，116=1080P60，120=4K",
-    "default": 80
+    "description": "B 站默认清晰度（16=360P，32=480P，64=720P，80=1080P，112=1080P+，116=1080P60，120=4K，125=HDR，127=8K）",
+    "default": 80,
+    "hint": "Web 管理页已改为下拉选择；这里填对应的数字代码即可。"
   },
   "ytdlp_enabled": {
     "type": "bool",
