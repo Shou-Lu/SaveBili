@@ -157,10 +157,10 @@ QQ 官方机器人接入方式：
 - `ytdlp_cookie`：全局兜底 Cookie 字符串，建议优先在「Cookie 输入」中按平台添加。
 - `ytdlp_cookiefile`：Netscape 格式 Cookies 文件路径，相对路径基于插件数据目录。
 - `ytdlp_allow_any_site`：允许任意 yt-dlp 支持的站点，默认关闭。
-- `group_download_mode`：群聊下载权限模式，`all` / `whitelist` / `blacklist`。
+- `group_download_mode`：群聊默认下载权限模式，`all` / `whitelist` / `blacklist`；只影响自动下载，显式 `/bdN` 或 `/saveany` 不受限。
 - `group_download_list`：群号列表，白名单/黑名单模式下使用。
-- `private_download_enabled`：私聊是否允许下载，默认开启。
-- `parse_all_group_messages`：群聊无需 @ 也解析链接（仅解析、不下载），默认关闭。
+- `private_download_enabled`：私聊是否允许默认自动下载，默认开启。
+- `parse_all_group_messages`：群聊无需 @ 也解析并缓存链接（不自动下载；回复「下载」或发送 `/bdN` 获取文件），默认关闭。
 - `parse_template`：自定义解析文本模板，留空使用内置文案；支持 `{image}` 等占位符。
 
 ## 依赖

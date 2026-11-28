@@ -52,7 +52,7 @@
     "options": ["all", "whitelist", "blacklist"],
     "labels": ["全部群聊允许", "仅白名单群聊", "黑名单群聊禁止"],
     "subtitles": ["任何群都可以下载", "只有列表中的群可以下载", "列表中的群不能下载"],
-    "hint": "解析始终可用；该开关只影响是否下载并发送视频。"
+    "hint": "解析始终可用；该开关只影响自动下载。未开启时仍可用 /bdN 或 /saveany 显式下载。"
   },
   "group_download_list": {
     "type": "list",
@@ -62,14 +62,14 @@
   },
   "private_download_enabled": {
     "type": "bool",
-    "description": "私聊是否允许下载",
+    "description": "私聊是否允许默认自动下载",
     "default": true
   },
   "parse_all_group_messages": {
     "type": "bool",
-    "description": "群聊中无需 @ 也解析视频链接（仅解析，不下载）",
+    "description": "群聊中无需 @ 也解析并缓存视频链接（不自动下载）",
     "default": false,
-    "hint": "开启后，群里的视频链接会被解析并回复信息卡片，但不会自动下载；下载仍需 @ 机器人且群聊已开启下载。"
+    "hint": "开启后，群里的视频链接会被解析并缓存；回复「下载」或发送 /bdN 即可下载，不会自动下载。"
   },
   "parse_template": {
     "type": "text",

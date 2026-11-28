@@ -250,8 +250,8 @@ export const TEMPLATE = `
             <div class="form-group" style="margin-top: 20px;">
                 <h2>群聊与解析</h2>
                 <p class="hint">
-                    解析始终可用；这里控制哪些群聊可以真正下载并发送视频。
-                    未开启下载的群聊仍会回复视频信息卡片，但不会发送视频文件。
+                    解析始终可用；这里控制哪些群聊默认自动下载。
+                    未开启的群聊仍会回复信息卡片，并提示用 /bdN 按需下载。
                 </p>
                 <label>群聊下载权限</label>
                 <select v-model="configForm.group_download_mode">
@@ -261,10 +261,10 @@ export const TEMPLATE = `
                 </select>
                 <label>群号列表（白名单/黑名单模式下使用）</label>
                 <textarea v-model="configForm.group_download_list" rows="4" placeholder="每行一个群号，也可以用逗号分隔"></textarea>
-                <label><input type="checkbox" v-model="configForm.private_download_enabled"> 私聊允许下载</label>
-                <label><input type="checkbox" v-model="configForm.parse_all_group_messages"> 群聊中无需 @ 也解析链接（仅解析，不下载）</label>
+                <label><input type="checkbox" v-model="configForm.private_download_enabled"> 私聊允许默认下载</label>
+                <label><input type="checkbox" v-model="configForm.parse_all_group_messages"> 群聊中无需 @ 也解析链接（仅解析，不自动下载）</label>
                 <p class="hint">
-                    开启后，普通群消息里的视频链接会回复信息卡片；下载仍需 @ 机器人，且该群已开启下载。
+                    开启后，普通群消息里的视频链接会解析并缓存；回复「下载」或发送 /bdN 即可下载。
                 </p>
                 <button @click="saveConfig" :disabled="configLoading">{{ configLoading ? '保存中...' : '保存配置' }}</button>
             </div>
