@@ -172,8 +172,10 @@ class SaveAnyBilibiliDownloader(Star):
         self.plugin_api = PluginAPI(self)
         self._recent_requests = {}
         self._pending_downloads = {}
-        self._pending_seq = {}
         self._pending_ttl = 1800
+        self._bd_seq = {}
+        self._bd_history = {}
+        self._bd_history_ttl = 86400
 
     # ============ 数据目录 ============
     PLUGIN_DIR_NAME = "astrbot_plugin_bili_downloader"
@@ -376,16 +378,21 @@ class SaveAnyBilibiliDownloader(Star):
         ]
         self._pending_downloads[session] = items[-10:]
 
-    def _register_pending(self, event: AstrMessageEvent, entry: dict) -> str:
+    def _register_pending(self, event: AstrMessageEvent, entry: dict, history_num: Optional[int] = None) -> str:
         session = self._session_key(event)
         self._cleanup_pending(session)
-        seq = int(self._pending_seq.get(session, 0)) + 1
-        self._pending_seq[session] = seq
-        pending_id = f"bd{seq}"
+        if history_num is None:
+            history_num = self._record_history(
+                event,
+                entry.get("title") or entry.get("name") or "未命名",
+                entry.get("url") or "",
+                entry.get("kind") or "",
+            )
+        pending_id = f"bd{history_num}"
         item = dict(entry)
         item.update({
             "id": pending_id,
-            "num": seq,
+            "num": history_num,
             "created": time.time(),
             "downloading": False,
         })
@@ -395,9 +402,76 @@ class SaveAnyBilibiliDownloader(Star):
             del items[:-10]
         return pending_id
 
+    # ============ 解析历史（/bd list） ============
+    def _cleanup_history(self, session: str) -> None:
+        now = time.time()
+        records = [
+            rec for rec in self._bd_history.get(session, [])
+            if now - rec.get("created", 0) <= self._bd_history_ttl
+        ]
+        self._bd_history[session] = records[-20:]
+
+    def _record_history(self, event: AstrMessageEvent, name: str, url: str, kind: str) -> int:
+        session = self._session_key(event)
+        self._cleanup_history(session)
+        seq = int(self._bd_seq.get(session, 0)) + 1
+        self._bd_seq[session] = seq
+        record = {
+            "num": seq,
+            "name": re.sub(r"\s+", " ", str(name or "")).strip()[:80] or "未命名",
+            "url": str(url or "").strip(),
+            "kind": str(kind or ""),
+            "status": "待下载",
+            "created": time.time(),
+        }
+        history = self._bd_history.setdefault(session, [])
+        history.append(record)
+        if len(history) > 20:
+            del history[:-20]
+        return seq
+
+    def _find_history(self, event: AstrMessageEvent, number: int):
+        session = self._session_key(event)
+        self._cleanup_history(session)
+        for record in self._bd_history.get(session, []):
+            if int(record.get("num", -1)) == number:
+                return record
+        return None
+
+    def _update_history_status(self, event: AstrMessageEvent, number: int, status: str) -> None:
+        record = self._find_history(event, number)
+        if record is not None:
+            record["status"] = status
+
+    @staticmethod
+    def _is_history_request(message: str) -> bool:
+        text = (message or "").strip().strip("。.!！?？、,，")
+        return bool(re.match(r"^/?bd\s*(?:list|列表|历史|history)$", text, re.I))
+
+    async def _handle_history(self, event: AstrMessageEvent):
+        session = self._session_key(event)
+        self._cleanup_history(session)
+        records = self._bd_history.get(session, [])
+        if not records:
+            yield event.plain_result("本会话还没有解析记录。")
+            return
+        lines = ["本会话解析历史："]
+        for record in records:
+            name = str(record.get("name") or "未命名")[:60]
+            url = str(record.get("url") or "")
+            status = str(record.get("status") or "已解析")
+            if status == "待下载" and self._find_pending(event, int(record.get("num", 0))) is None:
+                status = "已过期"
+            if url:
+                lines.append(f"{record.get('num')}. {name} + {url}（{status}）")
+            else:
+                lines.append(f"{record.get('num')}. {name}（{status}）")
+        lines.append("发送 /bdN 可下载标记为「待下载」的内容。")
+        yield event.plain_result("\n".join(lines))
+
     @staticmethod
     def _pending_hint(pending_id: str, label: str = "视频文件") -> str:
-        return f"💡 回复「下载」或发送 /{pending_id} 可获取{label}"
+        return f"💡 回复「下载」或发送 /{pending_id} 可获取{label}\n发送 /bd list 查看解析历史"
 
     def _has_pending(self, event: AstrMessageEvent) -> bool:
         session = self._session_key(event)
@@ -1128,13 +1202,26 @@ class SaveAnyBilibiliDownloader(Star):
         """用缓存的解析结果下载，不重新请求视频信息。"""
         item = self._find_pending(event, number)
         if not item:
-            yield event.plain_result("没有找到对应的解析结果，请重新发送链接。")
+            record = self._find_history(event, number)
+            if record is not None:
+                status = str(record.get("status") or "")
+                if status in ("已下载", "已保存", "已发送"):
+                    yield event.plain_result(
+                        "该内容已经处理过；如需重新获取，请重新发送链接或使用 /saveany。"
+                    )
+                elif status == "待下载":
+                    yield event.plain_result("该解析结果已过期，请重新发送链接。")
+                else:
+                    yield event.plain_result("该解析结果当前不可下载。")
+            else:
+                yield event.plain_result("没有找到对应的解析结果，请重新发送链接。")
             return
         if item.get("downloading"):
             yield event.plain_result("这个内容正在下载，请稍候。")
             return
         item["downloading"] = True
         ok = False
+        done_status = "已下载"
         try:
             kind = item.get("kind")
             if kind == "bilibili_video":
@@ -1172,6 +1259,7 @@ class SaveAnyBilibiliDownloader(Star):
                     item.get("content") or "",
                 )
                 ok = True
+                done_status = "已保存"
                 yield event.plain_result(
                     f"专栏：{item.get('title') or ''}\n作者：{item.get('author') or ''}\n\n"
                     f"正文已保存至：{txt_path}"
@@ -1184,6 +1272,7 @@ class SaveAnyBilibiliDownloader(Star):
                 )
                 if card is not None:
                     ok = True
+                    done_status = "已发送"
                     yield card
             else:
                 yield event.plain_result("该解析结果暂不支持下载。")
@@ -1193,14 +1282,24 @@ class SaveAnyBilibiliDownloader(Star):
         finally:
             item["downloading"] = False
         if ok:
+            self._update_history_status(event, item.get("num", 0), done_status)
             self._remove_pending(event, item)
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         message = event.message_str.strip()
+        # /bd list 查看本会话解析历史；不需要 @
+        if self._is_history_request(message):
+            try:
+                async for result in self._handle_history(event):
+                    yield result
+            finally:
+                event.stop_event()
+            return
+
         # 先处理「下载」/「/bd1」这类针对已解析内容的指令；即使群里没有 @ 也生效
         pending_request = self._parse_pending_request(message)
-        if pending_request is not None and self._has_pending(event):
+        if pending_request is not None and (pending_request > 0 or self._has_pending(event)):
             try:
                 async for result in self._handle_pending_download(event, pending_request):
                     yield result
@@ -1711,6 +1810,12 @@ class SaveAnyBilibiliDownloader(Star):
             return
 
         title = info.get("title") or url
+        history_num = self._record_history(
+            event,
+            title,
+            info.get("webpage_url") or url,
+            "ytdlp",
+        )
         default_text = self.build_ytdlp_notify(info, downloading=allow_download)
         context = {
             "type": "视频",
@@ -1740,14 +1845,16 @@ class SaveAnyBilibiliDownloader(Star):
                 "platform": platform,
                 "title": title,
                 "label": "视频文件",
-            })
+            }, history_num=history_num)
             yield event.plain_result(self._pending_hint(pending_id))
             return
 
         result, error = await self._perform_ytdlp_download(url, info, platform)
         if not result:
+            self._update_history_status(event, history_num, "下载失败")
             yield event.plain_result(error)
             return
+        self._update_history_status(event, history_num, "已下载")
         yield event.chain_result([Comp.Video.fromFileSystem(path=result["path"])])
 
     async def _perform_video_download(self, bvid: str, info: dict) -> str:
@@ -1767,6 +1874,12 @@ class SaveAnyBilibiliDownloader(Star):
 
         # 封面 + 文案合并成一条消息
         stat = info.get("stat", {}) or {}
+        history_num = self._record_history(
+            event,
+            info.get("title") or bvid,
+            f"https://www.bilibili.com/video/{bvid}",
+            "video",
+        )
         default_text = self.build_video_notify(info, downloading=allow_download)
         context = {
             "type": "视频",
@@ -1795,14 +1908,16 @@ class SaveAnyBilibiliDownloader(Star):
                 "info": info,
                 "title": info.get("title") or bvid,
                 "label": "视频文件",
-            })
+            }, history_num=history_num)
             yield event.plain_result(self._pending_hint(pending_id))
             return
 
         path = await self._perform_video_download(bvid, info)
         if path:
+            self._update_history_status(event, history_num, "已下载")
             yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
         else:
+            self._update_history_status(event, history_num, "下载失败")
             yield event.plain_result("下载失败，可能文件过大或网络问题。")
 
     async def _perform_bangumi_download(self, ep: dict, bangumi_title: str) -> str:
@@ -1833,6 +1948,13 @@ class SaveAnyBilibiliDownloader(Star):
             episodes = episodes[:1]
 
         for ep in episodes:
+            title = f"{bangumi.get('title', '')} - {ep.get('index')} {ep.get('title')}".strip()
+            history_num = self._record_history(
+                event,
+                title,
+                f"https://www.bilibili.com/bangumi/play/ep{ep.get('ep_id')}",
+                "bangumi",
+            )
             note = ""
             if only_first:
                 note = f"（整季共 {len(all_episodes)} 集"
@@ -1867,21 +1989,22 @@ class SaveAnyBilibiliDownloader(Star):
                 yield card
 
             if not allow_download:
-                title = f"{bangumi.get('title', '')} - {ep.get('index')} {ep.get('title')}".strip()
                 pending_id = self._register_pending(event, {
                     "kind": "bangumi",
                     "ep": ep,
                     "bangumi_title": bangumi.get("title") or "",
                     "title": title,
                     "label": "视频文件",
-                })
+                }, history_num=history_num)
                 yield event.plain_result(self._pending_hint(pending_id))
                 return
 
             path = await self._perform_bangumi_download(ep, bangumi.get("title") or "")
             if path:
+                self._update_history_status(event, history_num, "已下载")
                 yield event.chain_result([Comp.Video.fromFileSystem(path=path)])
             else:
+                self._update_history_status(event, history_num, "下载失败")
                 yield event.plain_result(f"第 {ep.get('index')} 集下载失败。")
 
     async def get_bilibili_video_info(self, bvid: str) -> dict:
@@ -2127,6 +2250,12 @@ class SaveAnyBilibiliDownloader(Star):
                 f"专栏：{d.get('title')}\n作者：{d.get('author', {}).get('name')}\n"
                 f"摘要：{self._format_desc(d.get('summary'))}"
             )
+            history_num = self._record_history(
+                event,
+                d.get("title") or f"cv{article_id}",
+                f"https://www.bilibili.com/read/cv{article_id}",
+                "article",
+            )
             if not allow_download:
                 pending_id = self._register_pending(event, {
                     "kind": "article",
@@ -2135,7 +2264,7 @@ class SaveAnyBilibiliDownloader(Star):
                     "author": d.get("author", {}).get("name") or "",
                     "content": d.get("content") or "",
                     "label": "正文",
-                })
+                }, history_num=history_num)
                 yield event.plain_result(f"{info_text}\n\n{self._pending_hint(pending_id, '正文')}")
                 return
             txt_path = self._save_article_text(
@@ -2144,6 +2273,7 @@ class SaveAnyBilibiliDownloader(Star):
                 d.get("author", {}).get("name") or "",
                 d.get("content") or "",
             )
+            self._update_history_status(event, history_num, "已保存")
             # 标题、摘要与保存结果合成一条消息
             yield event.plain_result(f"{info_text}\n\n正文已保存至：{txt_path}")
         except Exception as e:
@@ -2174,6 +2304,12 @@ class SaveAnyBilibiliDownloader(Star):
                 return
             text = item.get("modules", {}).get("module_dynamic", {}).get("desc", {}).get("text", "")
             images = [it.get("src") for it in (major.get("draw", {}) or {}).get("items", [])]
+            history_num = self._record_history(
+                event,
+                text or f"动态 {dynamic_id}",
+                f"https://t.bilibili.com/{dynamic_id}",
+                "opus",
+            )
             if not allow_download:
                 # 解析仍然可用：只展示动态文字，不发送图片；缓存后可用指令发送
                 pending_id = self._register_pending(event, {
@@ -2181,7 +2317,7 @@ class SaveAnyBilibiliDownloader(Star):
                     "text": text,
                     "images": images,
                     "label": "图片",
-                })
+                }, history_num=history_num)
                 card = self._result(
                     event,
                     f"动态内容：\n{text or '（无文字）'}\n\n"
@@ -2191,6 +2327,8 @@ class SaveAnyBilibiliDownloader(Star):
                 # 文案与全部配图放进同一条消息，避免一张图一条消息
                 card = self._result(event, f"动态内容：\n{text or '（无文字）'}", images=images)
             if card is not None:
+                if allow_download:
+                    self._update_history_status(event, history_num, "已发送")
                 yield card
         except Exception as e:
             logger.error(f"动态处理异常: {traceback.format_exc()}")

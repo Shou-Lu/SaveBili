@@ -5,7 +5,7 @@
     "author": "守禄",
     "description": "B 站与多平台视频下载插件",
     "main": "main.py",
-    "usage": "Savebili\nAstrBot 插件：下载 B 站及多平台视频并发送到聊天窗口。\n功能：\n通过 /saveany 或 @机器人 下载视频\n/parse 仅解析并展示视频信息\n解析后回复「下载」或 /bd1 按需下载，不重新解析\n/groupid 查看群号，便于配置下载权限\nB 站原生解析：视频/番剧/专栏/动态/收藏夹/合集\n多平台（yt-dlp）：抖音、小红书、微博、YouTube、TikTok 等\nB 站/微博/抖音扫码登录，Cookie 按平台管理\n群聊下载白名单/黑名单，解析全局可用\n适配 aiocqhttp、QQ 官方机器人（WebSocket/Webhook）、Telegram\nWeb管理页面：多平台登录、账号管理、配置、平台分布统计",
+    "usage": "Savebili\nAstrBot 插件：下载 B 站及多平台视频并发送到聊天窗口。\n功能：\n通过 /saveany 或 @机器人 下载视频\n/parse 仅解析并展示视频信息\n解析后回复「下载」或 /bd1 按需下载，不重新解析\n/bd list 查看本会话解析历史\n/groupid 查看群号，便于配置下载权限\nB 站原生解析：视频/番剧/专栏/动态/收藏夹/合集\n多平台（yt-dlp）：抖音、小红书、微博、YouTube、TikTok 等\nB 站/微博/抖音扫码登录，Cookie 按平台管理\n群聊下载白名单/黑名单，解析全局可用\n适配 aiocqhttp、QQ 官方机器人（WebSocket/Webhook）、Telegram\nWeb管理页面：多平台登录、账号管理、配置、平台分布统计",
     "repo": "https://github.com/shou-lu/SaveBili",
     "dependencies": [
         "aiohttp",

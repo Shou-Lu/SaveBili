@@ -11,6 +11,7 @@
 - 声明支持 QQ 官方机器人适配器：`qq_official`（WebSocket）与 `qq_official_webhook`（Webhook）。
 - 新增 `parse_template` 自定义解析文本模板，支持 `{image}`（封面）、`{title}`、`{owner}`、`{desc}`、`{platform}`、`{duration}`、`{view}`、`{like}`、`{url}`、`{type}`、`{status}` 等占位符。
 - 新增按需下载：解析后回复「下载」或发送 `/bd1`，直接使用缓存结果下载，不重新解析；`/saveany` 作为显式下载可绕过群聊默认下载限制。
+- 新增 `/bd list`（`/bd 列表`、`/bd 历史`）查看本会话解析历史，格式为 `1. 标题 + 链接（状态）`。
 - Web 管理页的 B 站清晰度改为下拉选择，不再需要手动输入画质代码。
 - 新增 `/groupid`（别名 `/群号`）指令，便于查看 OpenID 群号并配置下载白名单/黑名单。
 - 新增群聊下载权限：`group_download_mode`、`group_download_list`、`private_download_enabled`，解析始终可用，未开启下载的群聊只回复视频信息。
